@@ -1,0 +1,34 @@
+# Generic, RDF-agnostic defaults for rdf2ontology.
+#
+# This file contains no ontology-specific content (no entity names, no lakehouse ids, no
+# displayName) - it only tunes tool-wide behaviour, so the same file can be reused unchanged
+# across every RDF file you run through `rdf2ontology build`.
+#
+#   rdf2ontology build --input any_ontology.ttl --config rdf2ontology/config/defaults.yaml
+#
+# To customize one specific ontology (rename a relationship, pin a lakehouse id, add a
+# time-series binding, ...), layer a second, per-ontology config file on top - `--config` is
+# repeatable and later files win:
+#
+#   rdf2ontology build --input customer_address.ttl \
+#     --config rdf2ontology/config/defaults.yaml \
+#     --config rdf2ontology/config/customer_address.overrides.yaml
+
+rdf:
+  # Annotation local names the tool looks for on every class/property (see README "Annotations
+  # read from the graph"). Adopt this vocabulary once and every ontology "just works".
+  sourceTableProperty: sourceTable
+  sourceColumnProperty: sourceColumn
+  sourceLakehouseProperty: sourceLakehouse
+  keyProperty: isKey
+
+defaults:
+  emitUnboundEntities: true # reference classes with no source table still reach the model
+  emitUnboundRelationships: true # relationship types with no contextualization are still emitted
+  emitForeignKeyProperties: true # object-property source columns stay queryable as scalars
+  emitInverseRelationships: false
+  maxPortalNameLength: 26
+  unmappedRangeValueType: String
+
+lint:
+  failOn: error

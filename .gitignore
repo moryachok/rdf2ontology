@@ -1,0 +1,24 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging
+*.egg-info/
+dist/
+
+# Build output produced by `rdf2ontology build` (default --output=build)
+build/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# OS/editor cruft
+.DS_Store

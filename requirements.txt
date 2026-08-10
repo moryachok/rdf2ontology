@@ -1,0 +1,10 @@
+# Core pipeline (lint / build / validate / diff)
+rdflib>=7.0
+PyYAML>=6.0
+
+# Only required by `rdf2ontology deploy`
+fabric-cicd>=1.2.0
+azure-identity>=1.15.0
+
+# Tests
+pytest>=7.0
