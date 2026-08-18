@@ -8,7 +8,7 @@ from rdf2ontology.config import Config, LakehouseRef
 from rdf2ontology.emit import emit
 from rdf2ontology.ids import IdMap
 
-from conftest import CLEAN_TTL, PREFIXES, build
+from conftest import CLEAN_TTL, ENRICHED_TTL, PREFIXES, build
 
 
 def _config() -> Config:
@@ -154,3 +154,47 @@ def test_parameter_file_generation(tmp_path):
 def test_no_parameter_file_without_environments(tmp_path):
     _ontology, _ids, result = _emit(CLEAN_TTL, tmp_path)
     assert result.parameter_file is None
+
+
+def test_entity_synonyms_emitted_as_a_json_array(tmp_path):
+    _ontology, id_map, result = _emit(ENRICHED_TTL, tmp_path)
+    entity_dir = result.item_dir / "EntityTypes" / id_map.entity_id("Customer")
+    entity = json.loads((entity_dir / "definition.json").read_text())
+    assert entity["semanticEnrichment"]["synonyms"] == ["Customer", "Client", "Account Holder"]
+
+
+def test_entity_without_description_but_with_synonyms_still_emits_enrichment(tmp_path):
+    _ontology, id_map, result = _emit(ENRICHED_TTL, tmp_path)
+    entity_dir = result.item_dir / "EntityTypes" / id_map.entity_id("Customer")
+    entity = json.loads((entity_dir / "definition.json").read_text())
+    assert entity["semanticEnrichment"]["description"] is None
+
+
+def test_entity_without_synonyms_or_description_has_no_enrichment(tmp_path):
+    _ontology, id_map, result = _emit(ENRICHED_TTL, tmp_path)
+    entity_dir = result.item_dir / "EntityTypes" / id_map.entity_id("Address")
+    entity = json.loads((entity_dir / "definition.json").read_text())
+    assert "semanticEnrichment" not in entity
+
+
+def test_property_synonyms_emitted_as_a_comma_joined_string(tmp_path):
+    _ontology, id_map, result = _emit(ENRICHED_TTL, tmp_path)
+    entity_dir = result.item_dir / "EntityTypes" / id_map.entity_id("Customer")
+    entity = json.loads((entity_dir / "definition.json").read_text())
+    prop = next(p for p in entity["properties"] if p["name"] == "CustomerKey")
+    assert prop["semanticEnrichment"]["customAttributes"]["synonyms"] == "Customer Id,Customer Key"
+
+
+def test_fk_property_carries_alt_label_custom_attribute(tmp_path):
+    _ontology, id_map, result = _emit(ENRICHED_TTL, tmp_path)
+    entity_dir = result.item_dir / "EntityTypes" / id_map.entity_id("Customer")
+    entity = json.loads((entity_dir / "definition.json").read_text())
+    prop = next(p for p in entity["properties"] if p["name"] == "MainAddressKey")
+    assert prop["semanticEnrichment"]["customAttributes"]["altLabel"] == "IsAddressOfCustomer"
+
+
+def test_relationship_carries_alt_label_custom_attribute(tmp_path):
+    _ontology, id_map, result = _emit(ENRICHED_TTL, tmp_path)
+    relationship_dir = result.item_dir / "RelationshipTypes" / id_map.relationship_id("hasAddress")
+    relationship = json.loads((relationship_dir / "definition.json").read_text())
+    assert relationship["semanticEnrichment"]["customAttributes"]["altLabel"] == "IsAddressOfCustomer"

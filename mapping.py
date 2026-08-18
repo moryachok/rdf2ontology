@@ -116,7 +116,8 @@ def resolve_key(model: GraphModel, config: Config, class_iri: str) -> tuple[list
     if configured:
         return list(configured), "config", candidates
 
-    annotated = [p.name for p in data_properties if str(p.annotations.get("key", "")).lower() == "true"]
+    key_value = str(config.rdf.get("keyValue", "true")).lower()
+    annotated = [p.name for p in data_properties if str(p.annotations.get("key", "")).lower() == key_value]
     if annotated:
         return sorted(annotated), "annotation", candidates
 
@@ -192,6 +193,7 @@ def build_ontology(model: GraphModel, config: Config, name: str, diagnostics: Di
             lakehouse=lakehouse,
             schema=schema,
             table=table,
+            synonyms=record.synonyms,
         )
         taken_prop_names: set[str] = set()
         raw_to_final_prop: dict[str, str] = {}
@@ -254,6 +256,8 @@ def _add_foreign_key_properties(
             iri=prop.iri,
             value_type=value_type,
             source_column=column,
+            synonyms=prop.synonyms,
+            alt_label=prop.alt_label,
         )
         diagnostics.info(
             "W10",
@@ -295,6 +299,7 @@ def _build_property(
         source_column=prop.annotations.get("column") or prop.name,
         description=prop.comment,
         synonyms=prop.synonyms,
+        alt_label=prop.alt_label,
     )
 
 
@@ -379,6 +384,7 @@ def _build_relationships(
                 source_entity=source,
                 target_entity=target,
                 description=prop.comment,
+                custom_attributes={"altLabel": prop.alt_label} if prop.alt_label else {},
             )
             relationship.contextualization = _build_contextualization(
                 relationship, prop, entry, config, ontology, diagnostics

@@ -12,6 +12,10 @@ dist/
 # Build output produced by `rdf2ontology build` (default --output=build)
 build/
 
+# Per-ontology config overrides: keep only the generic defaults.yaml tracked
+config/*
+!config/defaults.yaml
+
 # Coverage
 .coverage
 htmlcov/

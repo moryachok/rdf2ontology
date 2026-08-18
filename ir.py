@@ -17,6 +17,7 @@ class PropertyIR:
     source_column: Optional[str] = None
     description: Optional[str] = None
     synonyms: list[str] = field(default_factory=list)
+    alt_label: Optional[str] = None
     timeseries: bool = False
 
 
@@ -42,6 +43,7 @@ class EntityIR:
     display_name_property: Optional[str] = None
     properties: dict[str, PropertyIR] = field(default_factory=dict)
     timeseries: list[TimeSeriesBindingIR] = field(default_factory=list)
+    synonyms: list[str] = field(default_factory=list)
 
     @property
     def bound(self) -> bool:

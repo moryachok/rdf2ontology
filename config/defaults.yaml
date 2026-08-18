@@ -21,6 +21,7 @@ rdf:
   sourceColumnProperty: sourceColumn
   sourceLakehouseProperty: sourceLakehouse
   keyProperty: isKey
+  synonymsProperty: synonyms
 
 defaults:
   emitUnboundEntities: true # reference classes with no source table still reach the model

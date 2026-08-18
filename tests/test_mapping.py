@@ -7,7 +7,7 @@ from rdf2ontology.diagnostics import DiagnosticBag
 from rdf2ontology.mapping import build_ontology, resolve_key, split_table, value_type_for_range
 from rdf2ontology.rdf_model import GraphModel
 
-from conftest import CLEAN_TTL, DEFAULTS_CONFIG, PREFIXES, SAMPLE_CONFIG, SAMPLE_OVERRIDES, build, make_model
+from conftest import CLEAN_TTL, DEFAULTS_CONFIG, ENRICHED_TTL, PREFIXES, SAMPLE_CONFIG, SAMPLE_OVERRIDES, build, make_model
 
 XSD = "http://www.w3.org/2001/XMLSchema#"
 
@@ -97,6 +97,53 @@ ex:Label a owl:DatatypeProperty ; rdfs:domain ex:Region ; rdfs:range xsd:string 
 """
     _ontology, _ids, bag = build(ttl)
     assert any(d.rule == "E3" for d in bag.errors)
+
+
+def test_key_from_value_matched_annotation():
+    ttl = PREFIXES + """
+ex:classification a owl:AnnotationProperty .
+ex:City a owl:Class .
+ex:City_CityKey a owl:DatatypeProperty ; rdfs:domain ex:City ; rdfs:range xsd:string ;
+    ex:classification "Key" .
+"""
+    config = Config()
+    config.rdf = {**config.rdf, "keyProperty": "classification", "keyValue": "Key"}
+    model = make_model(ttl, config)
+    key, rule, _ = resolve_key(model, config, "http://example.org/o#City")
+    assert key == ["City_CityKey"]
+    assert rule == "annotation"
+
+
+def test_fk_column_derived_from_join_condition():
+    ttl = PREFIXES + """
+ex:joinCondition a owl:AnnotationProperty .
+ex:Customer a owl:Class . ex:Address a owl:Class .
+ex:Customer_HasAddress_Address a owl:ObjectProperty ;
+    rdfs:domain ex:Customer ; rdfs:range ex:Address ;
+    ex:joinCondition "customer__t.addressKey = address__t.addressKey" .
+"""
+    config = Config()
+    config.rdf = {**config.rdf, "joinConditionProperty": "joinCondition"}
+    model = make_model(ttl, config)
+    prop = model.properties["http://example.org/o#Customer_HasAddress_Address"]
+    assert prop.annotations["column"] == "addressKey"
+
+
+def test_join_condition_does_not_override_explicit_source_column():
+    ttl = PREFIXES + """
+ex:sourceColumn a owl:AnnotationProperty .
+ex:joinCondition a owl:AnnotationProperty .
+ex:Customer a owl:Class . ex:Address a owl:Class .
+ex:Customer_HasAddress_Address a owl:ObjectProperty ;
+    rdfs:domain ex:Customer ; rdfs:range ex:Address ;
+    ex:sourceColumn "MainAddressKey" ;
+    ex:joinCondition "customer__t.addressKey = address__t.addressKey" .
+"""
+    config = Config()
+    config.rdf = {**config.rdf, "joinConditionProperty": "joinCondition"}
+    model = make_model(ttl, config)
+    prop = model.properties["http://example.org/o#Customer_HasAddress_Address"]
+    assert prop.annotations["column"] == "MainAddressKey"
 
 
 def test_display_name_heuristic():
@@ -209,6 +256,46 @@ def test_config_rejects_unknown_entity_keys(tmp_path):
     path.write_text("entities:\n  Customer:\n    keys: [A]\n", encoding="utf-8")
     with pytest.raises(ConfigError):
         load_config(path)
+
+
+def test_class_synonyms_split_on_semicolon_and_comma():
+    ontology, _ids, _bag = build(ENRICHED_TTL)
+    assert ontology.entities["Customer"].synonyms == ["Customer", "Client", "Account Holder"]
+
+
+def test_property_synonyms_split_on_semicolon_and_comma():
+    ontology, _ids, _bag = build(ENRICHED_TTL)
+    assert ontology.entities["Customer"].properties["CustomerKey"].synonyms == ["Customer Id", "Customer Key"]
+
+
+def test_class_without_synonyms_annotation_has_none():
+    ontology, _ids, _bag = build(ENRICHED_TTL)
+    assert ontology.entities["Address"].synonyms == []
+
+
+def test_object_property_alt_label_carried_onto_fk_property_and_relationship():
+    ontology, _ids, _bag = build(ENRICHED_TTL)
+    assert ontology.entities["Customer"].properties["MainAddressKey"].alt_label == "IsAddressOfCustomer"
+    relationship = next(r for r in ontology.relationships if r.name == "hasAddress")
+    assert relationship.custom_attributes == {"altLabel": "IsAddressOfCustomer"}
+
+
+def test_synonyms_property_respects_annotation_namespace_scoping():
+    config = Config()
+    config.rdf = {**config.rdf, "annotationNamespace": "http://other.example.org/"}
+    model = make_model(ENRICHED_TTL, config)
+    assert model.classes["http://example.org/o#Customer"].synonyms == []
+
+
+def test_synonyms_predicate_name_is_configurable():
+    ttl = PREFIXES + """
+ex:altNames a owl:AnnotationProperty .
+ex:Customer a owl:Class ; ex:altNames "Customer; Client" .
+"""
+    config = Config()
+    config.rdf = {**config.rdf, "synonymsProperty": "altNames"}
+    model = make_model(ttl, config)
+    assert model.classes["http://example.org/o#Customer"].synonyms == ["Customer", "Client"]
 
 
 def test_sample_config_loads():

@@ -120,7 +120,8 @@ def deploy(
 
     workspace = FabricWorkspace(
         workspace_id=workspace_id,
-        environment=environment,
+        # fabric_cicd requires a plain string; "N/A" is its own default for "no environment".
+        environment=environment or "N/A",
         repository_directory=str(repository_directory),
         item_type_in_scope=["Ontology"],
         token_credential=AzureCliCredential(),

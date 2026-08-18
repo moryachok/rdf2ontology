@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -54,6 +55,7 @@ class ClassRecord:
     comment: Optional[str] = None
     annotations: dict[str, str] = field(default_factory=dict)
     restrictions: list[Restriction] = field(default_factory=list)
+    synonyms: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -72,6 +74,7 @@ class PropertyRecord:
     unsupported_expression: bool = False
     functional: bool = False
     inverse_of: Optional[str] = None
+    alt_label: Optional[str] = None
 
 
 class GraphModel:
@@ -92,6 +95,8 @@ class GraphModel:
             "key": config.rdf["keyProperty"],
         }
         self._ann_namespace = config.rdf.get("annotationNamespace")
+        self._join_condition_name = config.rdf.get("joinConditionProperty")
+        self._synonyms_name = config.rdf.get("synonymsProperty")
         self._build()
 
     # -- construction ------------------------------------------------------
@@ -117,6 +122,7 @@ class GraphModel:
                 comment=self._literal(iri, RDFS.comment),
                 annotations=self._annotations(iri),
                 restrictions=self._restrictions(iri),
+                synonyms=self._synonyms(iri),
             )
 
         data_iris = {s for s in g.subjects(RDF.type, OWL.DatatypeProperty) if isinstance(s, URIRef)}
@@ -142,6 +148,7 @@ class GraphModel:
                 declared_range=bool(list(g.objects(iri, RDFS.range))),
                 unsupported_expression=unsupported_domain or unsupported_range,
                 functional=str(iri) in functional,
+                alt_label=self._alt_label(iri),
                 inverse_of=str(inverse) if isinstance(inverse, URIRef) else None,
             )
             self.properties[str(iri)] = record
@@ -155,16 +162,33 @@ class GraphModel:
         return None
 
     def _synonyms(self, subject: URIRef) -> list[str]:
+        """Reads the configured `rdf.synonymsProperty` local name (semicolon/comma-separated)."""
+        if not self._synonyms_name:
+            return []
         values: list[str] = []
-        for predicate in (SKOS.altLabel,):
-            for value in self.graph.objects(subject, predicate):
-                if isinstance(value, Literal):
-                    values.extend(part.strip() for part in str(value).split(",") if part.strip())
+        seen: set[str] = set()
+        for predicate, value in self.graph.predicate_objects(subject):
+            if not isinstance(predicate, URIRef) or not isinstance(value, Literal):
+                continue
+            if self._ann_namespace and not str(predicate).startswith(self._ann_namespace):
+                continue
+            if local_name(predicate) != self._synonyms_name:
+                continue
+            for raw in re.split(r"[;,]", str(value)):
+                part = raw.strip()
+                key = part.lower()
+                if part and key not in seen:
+                    seen.add(key)
+                    values.append(part)
         return values
+
+    def _alt_label(self, subject: URIRef) -> Optional[str]:
+        return self._literal(subject, SKOS.altLabel)
 
     def _annotations(self, subject: URIRef) -> dict[str, str]:
         """Annotation values keyed by the logical role (table / column / lakehouse / key)."""
         found: dict[str, str] = {}
+        join_condition: Optional[str] = None
         for predicate, value in self.graph.predicate_objects(subject):
             if not isinstance(predicate, URIRef) or not isinstance(value, Literal):
                 continue
@@ -174,6 +198,14 @@ class GraphModel:
             for role, expected in self._ann_names.items():
                 if predicate_local == expected:
                     found[role] = str(value)
+            if self._join_condition_name and predicate_local == self._join_condition_name:
+                join_condition = str(value)
+        if "column" not in found and join_condition:
+            # e.g. "producttable__t.fkColumn = othertable__t.pkColumn" -> "fkColumn"
+            lhs = join_condition.split("=", 1)[0].strip()
+            column = lhs.rsplit(".", 1)[-1].strip()
+            if column:
+                found["column"] = column
         return found
 
     def _restrictions(self, subject: URIRef) -> list[Restriction]:

@@ -23,6 +23,9 @@ _SECTION_KEYS: dict[str, set[str]] = {
         "sourceColumnProperty",
         "sourceLakehouseProperty",
         "keyProperty",
+        "keyValue",
+        "joinConditionProperty",
+        "synonymsProperty",
     },
     "fabric": {"workspaceId", "lakehouses", "environments"},
     "defaults": {
@@ -60,6 +63,9 @@ _RDF_DEFAULTS: dict[str, Any] = {
     "sourceColumnProperty": "sourceColumn",
     "sourceLakehouseProperty": "sourceLakehouse",
     "keyProperty": "isKey",
+    "keyValue": "true",
+    "joinConditionProperty": None,
+    "synonymsProperty": "synonyms",
 }
 
 

@@ -32,6 +32,12 @@ Design notes and rationale live in
 All commands in this document are run from the **repository root**.
 
 ```bash
+git clone https://github.com/moryachok/rdf2ontology.git
+cd rdf2ontology
+
+python3 -m venv .venv
+source .venv/bin/activate
+
 python3 -m pip install -r requirements.txt
 ```
 
@@ -243,6 +249,8 @@ rdf:
   sourceColumnProperty: sourceColumn
   sourceLakehouseProperty: sourceLakehouse
   keyProperty: isKey
+  keyValue: "true"                       # value that marks a property as the key
+  joinConditionProperty: null            # optional; derives sourceColumn from "a.col = b.col"
 
 defaults:
   emitUnboundEntities: true        # classes with no source table still become entity types
@@ -367,7 +375,7 @@ same name must carry the same `valueType` everywhere (`E4`).
 ### Entity key (`entityIdParts`)
 
 1. `entities.<Class>.key` in the config
-2. `isKey` annotation on the property
+2. `keyProperty` annotation on the property whose value matches `rdf.keyValue` (default `isKey: true`)
 3. `owl:Restriction` with `owl:cardinality 1` over a datatype property of the class
 4. a property named `<Class>Key` or `<Class>Id`
 5. nothing resolved → **error** if the class is bound, otherwise `entityIdParts: []` + `W9`
@@ -558,4 +566,15 @@ entity type, its key, display name and data binding must match the reference exa
 | Many `W3` warnings | Classes have no source table (expected) | Add `sourceTable` annotations, or accept the schema-only entity types |
 | `refusing to publish: N file(s) still carry the placeholder GUID` | `deploy` found `00000000-...` with no covering `parameter.yml` entry | Rebuild with `--workspace-id`/`--lakehouse-id`, add a `parameter.yml` entry for `--environment`, or pass `--allow-placeholders` |
 | Auto-renamed name you don't like | Illegal or duplicate RDF local name was auto-sanitized/suffixed | Pin your preferred name via `overrides.rename` |
+
+---
+
+## Resources
+
+- [fabric-cicd documentation](https://microsoft.github.io/fabric-cicd/1.2.0/) - the publishing
+  library used by `rdf2ontology deploy`
+- [skills-for-fabric: fabriciq-ontology-cli](https://github.com/microsoft/skills-for-fabric/tree/main/skills/fabriciq-ontology-cli) -
+  Copilot skill for authoring Fabric IQ Ontology items from the CLI
+- [Fabric IQ Ontology overview](https://learn.microsoft.com/en-us/fabric/iq/ontology/overview) -
+  Microsoft Learn documentation for the Ontology item this tool generates
 
