@@ -79,6 +79,25 @@ def title_to_name(title: str) -> str:
     return "".join(w[:1].upper() + w[1:] for w in words) or "Ontology"
 
 
+def _collect_custom_attributes(
+    keys: list[str],
+    annotations: dict[str, str],
+    *,
+    label: Optional[str] = None,
+    domain: Optional[str] = None,
+    range_: Optional[str] = None,
+    comment: Optional[str] = None,
+) -> dict[str, str]:
+    """Reserved names resolve to RDF built-ins; everything else looks up a raw annotation."""
+    reserved = {"label": label, "domain": domain, "range": range_, "comment": comment}
+    result: dict[str, str] = {}
+    for key in keys:
+        value = reserved[key] if key in reserved else annotations.get(key)
+        if value:
+            result[key] = value
+    return result
+
+
 def _finalize_name(
     candidate: str,
     taken: set[str],
@@ -194,6 +213,9 @@ def build_ontology(model: GraphModel, config: Config, name: str, diagnostics: Di
             schema=schema,
             table=table,
             synonyms=record.synonyms,
+            custom_attributes=_collect_custom_attributes(
+                config.custom_attribute_keys("entities"), record.raw_annotations, label=record.label
+            ),
         )
         taken_prop_names: set[str] = set()
         raw_to_final_prop: dict[str, str] = {}
@@ -203,7 +225,9 @@ def build_ontology(model: GraphModel, config: Config, name: str, diagnostics: Di
             prop_name = _finalize_name(
                 config.rename(prop.name), taken_prop_names, diagnostics, f"{entity_name}.{prop.name}", "property", ontology
             )
-            entity.properties[prop_name] = _build_property(prop, prop_name, entity_name, config, diagnostics, unmapped_default)
+            entity.properties[prop_name] = _build_property(
+                prop, prop_name, entity_name, config, diagnostics, unmapped_default
+            )
             raw_to_final_prop[prop.name] = prop_name
         if config.flag("emitForeignKeyProperties"):
             _add_foreign_key_properties(model, config, entity, class_iri, taken_prop_names, diagnostics, ontology)
@@ -256,8 +280,16 @@ def _add_foreign_key_properties(
             iri=prop.iri,
             value_type=value_type,
             source_column=column,
+            description=prop.comment,
             synonyms=prop.synonyms,
             alt_label=prop.alt_label,
+            custom_attributes=_collect_custom_attributes(
+                config.custom_attribute_keys("objectProperties"),
+                prop.raw_annotations,
+                label=prop.label,
+                domain=entity.name,
+                range_=local_name(prop.ranges[0]) if prop.ranges else None,
+            ),
         )
         diagnostics.info(
             "W10",
@@ -300,6 +332,9 @@ def _build_property(
         description=prop.comment,
         synonyms=prop.synonyms,
         alt_label=prop.alt_label,
+        custom_attributes=_collect_custom_attributes(
+            config.custom_attribute_keys("dataProperties"), prop.raw_annotations, label=prop.label, domain=entity_name
+        ),
     )
 
 
@@ -378,13 +413,22 @@ def _build_relationships(
             candidate = base if len(pairs) == 1 else f"{base}{source}{target}"
             label = base_raw if len(pairs) == 1 else f"{base_raw}:{source}->{target}"
             name = _finalize_name(candidate, taken_relationship_names, diagnostics, label, "relationship", ontology)
+            custom_attributes = _collect_custom_attributes(
+                config.custom_attribute_keys("objectProperties"),
+                prop.raw_annotations,
+                label=prop.label,
+                domain=source,
+                range_=target,
+            )
+            if prop.alt_label:
+                custom_attributes["altLabel"] = prop.alt_label
             relationship = RelationshipIR(
                 name=name,
                 iri=prop.iri,
                 source_entity=source,
                 target_entity=target,
                 description=prop.comment,
-                custom_attributes={"altLabel": prop.alt_label} if prop.alt_label else {},
+                custom_attributes=custom_attributes,
             )
             relationship.contextualization = _build_contextualization(
                 relationship, prop, entry, config, ontology, diagnostics

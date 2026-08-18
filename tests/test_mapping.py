@@ -7,7 +7,17 @@ from rdf2ontology.diagnostics import DiagnosticBag
 from rdf2ontology.mapping import build_ontology, resolve_key, split_table, value_type_for_range
 from rdf2ontology.rdf_model import GraphModel
 
-from conftest import CLEAN_TTL, DEFAULTS_CONFIG, ENRICHED_TTL, PREFIXES, SAMPLE_CONFIG, SAMPLE_OVERRIDES, build, make_model
+from conftest import (
+    CLEAN_TTL,
+    DEFAULTS_CONFIG,
+    ENRICHED_TTL,
+    PREFIXES,
+    SAMPLE_CONFIG,
+    SAMPLE_OVERRIDES,
+    build,
+    custom_attributes_config,
+    make_model,
+)
 
 XSD = "http://www.w3.org/2001/XMLSchema#"
 
@@ -251,6 +261,20 @@ def test_config_rejects_unknown_keys(tmp_path):
         load_config(path)
 
 
+def test_config_rejects_unknown_custom_attributes_key(tmp_path):
+    path = tmp_path / "bad.yaml"
+    path.write_text("customAttributes:\n  relationships: [label]\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(path)
+
+
+def test_config_rejects_non_list_custom_attributes(tmp_path):
+    path = tmp_path / "bad.yaml"
+    path.write_text("customAttributes:\n  entities: label\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(path)
+
+
 def test_config_rejects_unknown_entity_keys(tmp_path):
     path = tmp_path / "bad.yaml"
     path.write_text("entities:\n  Customer:\n    keys: [A]\n", encoding="utf-8")
@@ -278,6 +302,61 @@ def test_object_property_alt_label_carried_onto_fk_property_and_relationship():
     assert ontology.entities["Customer"].properties["MainAddressKey"].alt_label == "IsAddressOfCustomer"
     relationship = next(r for r in ontology.relationships if r.name == "hasAddress")
     assert relationship.custom_attributes == {"altLabel": "IsAddressOfCustomer"}
+
+
+def test_no_custom_attributes_by_default():
+    ontology, _ids, _bag = build(ENRICHED_TTL)
+    assert ontology.entities["Customer"].custom_attributes == {}
+    assert ontology.entities["Customer"].properties["CustomerKey"].custom_attributes == {}
+
+
+def test_entity_custom_attributes_resolve_label_and_annotations():
+    ontology, _ids, _bag = build(ENRICHED_TTL, custom_attributes_config())
+    assert ontology.entities["Customer"].custom_attributes == {
+        "label": "Customer",
+        "classId": "119",
+        "subjectArea": "Customer",
+        "classType": "Master",
+    }
+
+
+def test_entity_custom_attributes_omit_absent_annotations():
+    ontology, _ids, _bag = build(ENRICHED_TTL, custom_attributes_config())
+    # Address has none of classId/subjectArea/classType and no rdfs:label.
+    assert ontology.entities["Address"].custom_attributes == {}
+
+
+def test_data_property_custom_attributes_resolve_label_and_domain():
+    ontology, _ids, _bag = build(ENRICHED_TTL, custom_attributes_config())
+    assert ontology.entities["Customer"].properties["CustomerKey"].custom_attributes == {
+        "label": "Customer Key",
+        "domain": "Customer",
+        "dataPropertyId": "283",
+        "classification": "Key",
+        "mandatoryOptionalInd": "Mandatory",
+    }
+
+
+def test_fk_property_gets_description_and_object_property_custom_attributes():
+    ontology, _ids, _bag = build(ENRICHED_TTL, custom_attributes_config())
+    prop = ontology.entities["Customer"].properties["MainAddressKey"]
+    assert prop.description == "Links a customer to their main address."
+    assert prop.custom_attributes == {
+        "label": "Customer has Main Address",
+        "domain": "Customer",
+        "range": "Address",
+    }
+
+
+def test_relationship_custom_attributes_include_domain_range_and_alt_label():
+    ontology, _ids, _bag = build(ENRICHED_TTL, custom_attributes_config())
+    relationship = next(r for r in ontology.relationships if r.name == "hasAddress")
+    assert relationship.custom_attributes == {
+        "label": "Customer has Main Address",
+        "domain": "Customer",
+        "range": "Address",
+        "altLabel": "IsAddressOfCustomer",
+    }
 
 
 def test_synonyms_property_respects_annotation_namespace_scoping():

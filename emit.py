@@ -49,13 +49,17 @@ def _semantic_enrichment(description: Optional[str], synonyms: list[str], extra:
     return payload
 
 
-def _entity_semantic_enrichment(description: Optional[str], synonyms: list[str]) -> Optional[dict]:
+def _entity_semantic_enrichment(
+    description: Optional[str], synonyms: list[str], custom_attributes: Optional[dict] = None
+) -> Optional[dict]:
     """Entity-level enrichment: synonyms is a JSON array, a sibling of description (not a customAttribute)."""
-    if not description and not synonyms:
+    if not description and not synonyms and not custom_attributes:
         return None
     payload: dict[str, Any] = {"description": description}
     if synonyms:
         payload["synonyms"] = list(synonyms)
+    if custom_attributes:
+        payload["customAttributes"] = dict(custom_attributes)
     return payload
 
 
@@ -75,8 +79,10 @@ def _property_json(entity: EntityIR, prop: PropertyIR, id_map: IdMap) -> dict:
         "baseTypeNamespaceType": None,
         "valueType": prop.value_type,
     }
-    extra = {"altLabel": prop.alt_label} if prop.alt_label else None
-    enrichment = _semantic_enrichment(prop.description, prop.synonyms, extra)
+    extra = dict(prop.custom_attributes)
+    if prop.alt_label:
+        extra["altLabel"] = prop.alt_label
+    enrichment = _semantic_enrichment(prop.description, prop.synonyms, extra or None)
     if enrichment:
         payload["semanticEnrichment"] = enrichment
     return payload
@@ -100,7 +106,7 @@ def _entity_json(entity: EntityIR, id_map: IdMap) -> dict:
     timeseries = _ordered_properties(entity, timeseries=True)
     if timeseries:
         payload["timeseriesProperties"] = [_property_json(entity, p, id_map) for p in timeseries]
-    enrichment = _entity_semantic_enrichment(entity.description, entity.synonyms)
+    enrichment = _entity_semantic_enrichment(entity.description, entity.synonyms, entity.custom_attributes)
     if enrichment:
         payload["semanticEnrichment"] = enrichment
     return payload

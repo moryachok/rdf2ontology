@@ -33,3 +33,13 @@ defaults:
 
 lint:
   failOn: error
+
+# customAttributes:
+#   Project extra RDF annotations into semanticEnrichment.customAttributes. Each list names the
+#   annotation local names to copy (or the reserved names 'label' / 'domain' / 'range', resolved
+#   from rdfs:label / rdfs:domain / rdfs:range instead of an annotation). Empty by default so
+#   generic ontologies emit no extra attributes; see an ontology's overrides file to opt in.
+# customAttributes:
+#   entities: []
+#   dataProperties: []
+#   objectProperties: []

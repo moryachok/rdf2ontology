@@ -40,7 +40,9 @@ _SECTION_KEYS: dict[str, set[str]] = {
     "lint": {"failOn", "ignore"},
     "overrides": {"valueTypes", "rename"},
     "exclude": {"classes", "properties"},
+    "customAttributes": {"entities", "dataProperties", "objectProperties"},
 }
+_CUSTOM_ATTRIBUTE_DEFAULTS: dict[str, list[str]] = {"entities": [], "dataProperties": [], "objectProperties": []}
 _FREEFORM_SECTIONS = {"entities", "relationships"}
 _ENTITY_KEYS = {"key", "displayNameProperty", "sourceTable", "sourceLakehouse", "timeseries", "exclude"}
 _TIMESERIES_KEYS = {"table", "timestampColumn", "properties", "lakehouse"}
@@ -94,6 +96,7 @@ class Config:
     renames: dict[str, str] = field(default_factory=dict)
     excluded_classes: set[str] = field(default_factory=set)
     excluded_properties: set[str] = field(default_factory=set)
+    custom_attributes: dict[str, list[str]] = field(default_factory=lambda: dict(_CUSTOM_ATTRIBUTE_DEFAULTS))
     path: Optional[Path] = None
     # Deployment identifiers supplied on the CLI, used when the RDF/config carries none.
     cli_workspace_id: Optional[str] = None
@@ -136,6 +139,10 @@ class Config:
 
     def flag(self, name: str) -> Any:
         return self.defaults.get(name, _DEFAULTS.get(name))
+
+    def custom_attribute_keys(self, kind: str) -> list[str]:
+        """kind is 'entities' | 'dataProperties' | 'objectProperties'."""
+        return self.custom_attributes.get(kind, [])
 
 
 def _require_mapping(value: Any, where: str) -> dict:
@@ -286,5 +293,15 @@ def load_config(paths: Optional[Any]) -> Config:
     _reject_unknown("exclude", exclude, _SECTION_KEYS["exclude"])
     cfg.excluded_classes = set(exclude.get("classes") or [])
     cfg.excluded_properties = set(exclude.get("properties") or [])
+
+    custom_attributes = _require_mapping(raw.get("customAttributes"), "customAttributes")
+    _reject_unknown("customAttributes", custom_attributes, _SECTION_KEYS["customAttributes"])
+    for kind in _CUSTOM_ATTRIBUTE_DEFAULTS:
+        value = custom_attributes.get(kind)
+        if value is None:
+            continue
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ConfigError(f"customAttributes.{kind} must be a list of strings")
+        cfg.custom_attributes[kind] = value
 
     return cfg

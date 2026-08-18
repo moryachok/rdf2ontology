@@ -8,7 +8,7 @@ from rdf2ontology.config import Config, LakehouseRef
 from rdf2ontology.emit import emit
 from rdf2ontology.ids import IdMap
 
-from conftest import CLEAN_TTL, ENRICHED_TTL, PREFIXES, build
+from conftest import CLEAN_TTL, ENRICHED_TTL, PREFIXES, build, custom_attributes_config
 
 
 def _config() -> Config:
@@ -191,6 +191,94 @@ def test_fk_property_carries_alt_label_custom_attribute(tmp_path):
     entity = json.loads((entity_dir / "definition.json").read_text())
     prop = next(p for p in entity["properties"] if p["name"] == "MainAddressKey")
     assert prop["semanticEnrichment"]["customAttributes"]["altLabel"] == "IsAddressOfCustomer"
+
+
+def _custom_attributes_config() -> Config:
+    config = _config()
+    config.custom_attributes = custom_attributes_config().custom_attributes
+    return config
+
+
+def test_entity_custom_attributes_emitted_alongside_synonyms(tmp_path):
+    _ontology, id_map, result = _emit(ENRICHED_TTL, tmp_path, config=_custom_attributes_config())
+    entity_dir = result.item_dir / "EntityTypes" / id_map.entity_id("Customer")
+    entity = json.loads((entity_dir / "definition.json").read_text())
+    enrichment = entity["semanticEnrichment"]
+    assert enrichment["synonyms"] == ["Customer", "Client", "Account Holder"]
+    assert enrichment["customAttributes"] == {
+        "label": "Customer",
+        "classId": "119",
+        "subjectArea": "Customer",
+        "classType": "Master",
+    }
+
+
+def test_entity_with_only_custom_attributes_still_emits_enrichment(tmp_path):
+    # Address has no description/synonyms but does carry a source-table annotation-free key;
+    # its custom_attributes end up empty too, so it stays enrichment-free.
+    _ontology, id_map, result = _emit(ENRICHED_TTL, tmp_path, config=_custom_attributes_config())
+    entity_dir = result.item_dir / "EntityTypes" / id_map.entity_id("Address")
+    entity = json.loads((entity_dir / "definition.json").read_text())
+    assert "semanticEnrichment" not in entity
+
+
+def test_entity_custom_attributes_alone_trigger_enrichment(tmp_path):
+    # No rdfs:comment and no :synonyms on ex:City -- only the classId custom attribute.
+    ttl = PREFIXES + """
+ex:sourceTable a owl:AnnotationProperty .
+ex:classId a owl:AnnotationProperty .
+
+ex:City a owl:Class ; ex:sourceTable "dbo.city" ; ex:classId "42" .
+ex:CityKey a owl:DatatypeProperty , owl:FunctionalProperty ;
+    ex:sourceColumn "CityKey" ; rdfs:domain ex:City ; rdfs:range xsd:string .
+"""
+    config = _config()
+    config.custom_attributes = {"entities": ["classId"], "dataProperties": [], "objectProperties": []}
+    _ontology, id_map, result = _emit(ttl, tmp_path, config=config)
+    entity_dir = result.item_dir / "EntityTypes" / id_map.entity_id("City")
+    entity = json.loads((entity_dir / "definition.json").read_text())
+    assert entity["semanticEnrichment"] == {"description": None, "customAttributes": {"classId": "42"}}
+
+
+def test_data_property_custom_attributes_emitted(tmp_path):
+    _ontology, id_map, result = _emit(ENRICHED_TTL, tmp_path, config=_custom_attributes_config())
+    entity_dir = result.item_dir / "EntityTypes" / id_map.entity_id("Customer")
+    entity = json.loads((entity_dir / "definition.json").read_text())
+    prop = next(p for p in entity["properties"] if p["name"] == "CustomerKey")
+    assert prop["semanticEnrichment"]["customAttributes"] == {
+        "label": "Customer Key",
+        "domain": "Customer",
+        "dataPropertyId": "283",
+        "classification": "Key",
+        "mandatoryOptionalInd": "Mandatory",
+        "synonyms": "Customer Id,Customer Key",
+    }
+
+
+def test_fk_property_description_and_custom_attributes_emitted(tmp_path):
+    _ontology, id_map, result = _emit(ENRICHED_TTL, tmp_path, config=_custom_attributes_config())
+    entity_dir = result.item_dir / "EntityTypes" / id_map.entity_id("Customer")
+    entity = json.loads((entity_dir / "definition.json").read_text())
+    prop = next(p for p in entity["properties"] if p["name"] == "MainAddressKey")
+    assert prop["semanticEnrichment"]["description"] == "Links a customer to their main address."
+    assert prop["semanticEnrichment"]["customAttributes"] == {
+        "label": "Customer has Main Address",
+        "domain": "Customer",
+        "range": "Address",
+        "altLabel": "IsAddressOfCustomer",
+    }
+
+
+def test_relationship_custom_attributes_emitted(tmp_path):
+    _ontology, id_map, result = _emit(ENRICHED_TTL, tmp_path, config=_custom_attributes_config())
+    relationship_dir = result.item_dir / "RelationshipTypes" / id_map.relationship_id("hasAddress")
+    relationship = json.loads((relationship_dir / "definition.json").read_text())
+    assert relationship["semanticEnrichment"]["customAttributes"] == {
+        "label": "Customer has Main Address",
+        "domain": "Customer",
+        "range": "Address",
+        "altLabel": "IsAddressOfCustomer",
+    }
 
 
 def test_relationship_carries_alt_label_custom_attribute(tmp_path):

@@ -56,6 +56,7 @@ class ClassRecord:
     annotations: dict[str, str] = field(default_factory=dict)
     restrictions: list[Restriction] = field(default_factory=list)
     synonyms: list[str] = field(default_factory=list)
+    raw_annotations: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -75,6 +76,7 @@ class PropertyRecord:
     functional: bool = False
     inverse_of: Optional[str] = None
     alt_label: Optional[str] = None
+    raw_annotations: dict[str, str] = field(default_factory=dict)
 
 
 class GraphModel:
@@ -123,6 +125,7 @@ class GraphModel:
                 annotations=self._annotations(iri),
                 restrictions=self._restrictions(iri),
                 synonyms=self._synonyms(iri),
+                raw_annotations=self._raw_annotations(iri),
             )
 
         data_iris = {s for s in g.subjects(RDF.type, OWL.DatatypeProperty) if isinstance(s, URIRef)}
@@ -150,6 +153,7 @@ class GraphModel:
                 functional=str(iri) in functional,
                 alt_label=self._alt_label(iri),
                 inverse_of=str(inverse) if isinstance(inverse, URIRef) else None,
+                raw_annotations=self._raw_annotations(iri),
             )
             self.properties[str(iri)] = record
             if str(iri) in self.classes:
@@ -184,6 +188,17 @@ class GraphModel:
 
     def _alt_label(self, subject: URIRef) -> Optional[str]:
         return self._literal(subject, SKOS.altLabel)
+
+    def _raw_annotations(self, subject: URIRef) -> dict[str, str]:
+        """Every literal-valued annotation on the subject, keyed by local name (first value wins)."""
+        found: dict[str, str] = {}
+        for predicate, value in self.graph.predicate_objects(subject):
+            if not isinstance(predicate, URIRef) or not isinstance(value, Literal):
+                continue
+            if self._ann_namespace and not str(predicate).startswith(self._ann_namespace):
+                continue
+            found.setdefault(local_name(predicate), str(value))
+        return found
 
     def _annotations(self, subject: URIRef) -> dict[str, str]:
         """Annotation values keyed by the logical role (table / column / lakehouse / key)."""
