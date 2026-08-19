@@ -23,6 +23,9 @@ _XSD = str(XSD)
 _ILLEGAL_NAME_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
 _WORD = re.compile(r"[A-Za-z0-9]+")
 
+# Source-system vocabulary (e.g. Amdocs Telco) carries the physical column name here.
+PHYSICAL_NAME_ANNOTATION = "physicalDataPropertyName"
+
 VALUE_TYPE_BY_RANGE: dict[str, str] = {
     **{f"{_XSD}{name}": "String" for name in ("string", "anyURI", "token", "normalizedString", "NCName", "Name", "language")},
     str(RDF.langString): "String",
@@ -125,6 +128,75 @@ def _finalize_name(
     return final
 
 
+def _derived_property_name(prop: PropertyRecord, entity_name: str, diagnostics: DiagnosticBag) -> str:
+    """Prefer the source system's physical column name over the RDF local name."""
+    physical = (prop.raw_annotations.get(PHYSICAL_NAME_ANNOTATION) or "").strip()
+    if physical:
+        return physical
+    diagnostics.warning(
+        "W11",
+        f"no {PHYSICAL_NAME_ANNOTATION} annotation; falling back to the RDF local name",
+        f"{entity_name}.{prop.name}",
+    )
+    return prop.name
+
+
+def _resolve_value_type(
+    prop: PropertyRecord,
+    entity_name: str,
+    name: str,
+    config: Config,
+    unmapped_default: str,
+    diagnostics: Optional[DiagnosticBag] = None,
+) -> str:
+    override = config.value_type_override(entity_name, prop.name) or config.value_type_override(entity_name, name)
+    if override:
+        return override
+    value_type = value_type_for_range(prop.ranges[0] if prop.ranges else None)
+    if value_type is None:
+        value_type = unmapped_default
+        if diagnostics is not None:
+            diagnostics.warning(
+                "W2",
+                f"range {local_name(prop.ranges[0]) if prop.ranges else 'missing'} is unmapped; defaulted to {unmapped_default}",
+                f"{entity_name}.{name}",
+            )
+    return value_type
+
+
+def _conflicting_derived_names(model: GraphModel, config: Config, unmapped_default: str) -> set[str]:
+    """Derived names that would land on two entity types with different valueTypes; Fabric rejects those."""
+    emit_unbound = bool(config.flag("emitUnboundEntities"))
+    emit_fk = bool(config.flag("emitForeignKeyProperties"))
+    quiet = DiagnosticBag()
+    types_by_name: dict[str, set[str]] = {}
+    for class_iri in sorted(model.classes):
+        record = model.classes[class_iri]
+        if config.is_class_excluded(record.name):
+            continue
+        _, _, table = _entity_source(model, config, class_iri)
+        if table is None and not emit_unbound:
+            continue
+        entity_name = sanitize_name(config.rename(record.name))
+        for prop in model.properties_of(class_iri, "data"):
+            if config.is_property_excluded(entity_name, prop.name):
+                continue
+            derived = _derived_property_name(prop, entity_name, quiet)
+            value_type = _resolve_value_type(prop, entity_name, derived, config, unmapped_default)
+            types_by_name.setdefault(derived, set()).add(value_type)
+        if emit_fk:
+            for prop in model.properties_of(class_iri, "object"):
+                column = prop.annotations.get("column")
+                if not column:
+                    continue
+                candidate = sanitize_name(config.rename(column))
+                if config.is_property_excluded(entity_name, candidate):
+                    continue
+                value_type = config.value_type_override(entity_name, candidate) or "String"
+                types_by_name.setdefault(candidate, set()).add(value_type)
+    return {name for name, types in types_by_name.items() if len(types) > 1}
+
+
 def resolve_key(model: GraphModel, config: Config, class_iri: str) -> tuple[list[str], str, list[str]]:
     """Key resolution precedence (plan section 5.5). Returns (key, rule, candidates)."""
     class_name = model.class_name(class_iri)
@@ -189,6 +261,7 @@ def build_ontology(model: GraphModel, config: Config, name: str, diagnostics: Di
     ontology = OntologyIR(name=name, logical_id=config.logical_id)
     emit_unbound = bool(config.flag("emitUnboundEntities"))
     unmapped_default = config.flag("unmappedRangeValueType") or "String"
+    conflicting_names = _conflicting_derived_names(model, config, unmapped_default)
 
     class_by_iri: dict[str, str] = {}
     taken_entity_names: set[str] = set()
@@ -219,18 +292,33 @@ def build_ontology(model: GraphModel, config: Config, name: str, diagnostics: Di
         )
         taken_prop_names: set[str] = set()
         raw_to_final_prop: dict[str, str] = {}
-        for prop in sorted(model.properties_of(class_iri, "data"), key=lambda p: p.name):
-            if config.is_property_excluded(entity_name, prop.name):
-                continue
+        derived_names = {
+            prop.iri: _derived_property_name(prop, entity_name, diagnostics)
+            for prop in model.properties_of(class_iri, "data")
+            if not config.is_property_excluded(entity_name, prop.name)
+        }
+        for prop_iri in sorted(derived_names, key=lambda iri: (derived_names[iri], iri)):
+            prop = model.properties[prop_iri]
+            derived = derived_names[prop_iri]
+            candidate = prop.name if derived in conflicting_names else derived
+            if derived in conflicting_names:
+                diagnostics.warning(
+                    "W12",
+                    f"'{derived}' has conflicting valueTypes across entity types; falling back to the RDF local name",
+                    f"{entity_name}.{prop.name}",
+                )
             prop_name = _finalize_name(
-                config.rename(prop.name), taken_prop_names, diagnostics, f"{entity_name}.{prop.name}", "property", ontology
+                config.rename(candidate), taken_prop_names, diagnostics, f"{entity_name}.{prop.name}", "property", ontology
             )
             entity.properties[prop_name] = _build_property(
                 prop, prop_name, entity_name, config, diagnostics, unmapped_default
             )
             raw_to_final_prop[prop.name] = prop_name
+            raw_to_final_prop.setdefault(derived, prop_name)
         if config.flag("emitForeignKeyProperties"):
-            _add_foreign_key_properties(model, config, entity, class_iri, taken_prop_names, diagnostics, ontology)
+            _add_foreign_key_properties(
+                model, config, entity, class_iri, taken_prop_names, diagnostics, ontology, conflicting_names
+            )
         ontology.entities[entity_name] = entity
         class_by_iri[class_iri] = entity_name
 
@@ -262,6 +350,7 @@ def _add_foreign_key_properties(
     taken: set[str],
     diagnostics: DiagnosticBag,
     ontology: OntologyIR,
+    conflicting_names: set[str],
 ) -> None:
     """An object property with a source column is also a real column: keep it queryable."""
     for prop in sorted(model.properties_of(class_iri, "object"), key=lambda p: p.name):
@@ -273,7 +362,15 @@ def _add_foreign_key_properties(
             continue
         if candidate in entity.properties:
             continue  # already an explicit scalar property for this column
-        name = _finalize_name(config.rename(column), taken, diagnostics, f"{entity.name}.{column}", "property", ontology)
+        raw_candidate = column
+        if candidate in conflicting_names:
+            diagnostics.warning(
+                "W12",
+                f"'{candidate}' has conflicting valueTypes across entity types; falling back to the RDF local name",
+                f"{entity.name}.{prop.name}",
+            )
+            raw_candidate = prop.name
+        name = _finalize_name(config.rename(raw_candidate), taken, diagnostics, f"{entity.name}.{column}", "property", ontology)
         value_type = config.value_type_override(entity.name, name) or "String"
         entity.properties[name] = PropertyIR(
             name=name,
@@ -306,18 +403,7 @@ def _build_property(
     diagnostics: DiagnosticBag,
     unmapped_default: str,
 ) -> PropertyIR:
-    override = config.value_type_override(entity_name, prop.name) or config.value_type_override(entity_name, name)
-    if override:
-        value_type = override
-    else:
-        value_type = value_type_for_range(prop.ranges[0] if prop.ranges else None)
-        if value_type is None:
-            value_type = unmapped_default
-            diagnostics.warning(
-                "W2",
-                f"range {local_name(prop.ranges[0]) if prop.ranges else 'missing'} is unmapped; defaulted to {unmapped_default}",
-                f"{entity_name}.{name}",
-            )
+    value_type = _resolve_value_type(prop, entity_name, name, config, unmapped_default, diagnostics)
     if value_type == "Boolean" and prop.comment and "integer" in prop.comment.lower():
         diagnostics.warning(
             "W6",

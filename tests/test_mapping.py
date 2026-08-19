@@ -11,6 +11,7 @@ from conftest import (
     CLEAN_TTL,
     DEFAULTS_CONFIG,
     ENRICHED_TTL,
+    PHYSICAL_TTL,
     PREFIXES,
     SAMPLE_CONFIG,
     SAMPLE_OVERRIDES,
@@ -440,3 +441,62 @@ def test_sample_ontology_shape(sample_ontology):
     assert ontology.entities["Customer"].key == ["CustomerKey"]
     assert ontology.entities["Address"].key == ["AddressKey"]
     assert ontology.entities["Customer"].properties["MVNOFlag"].value_type == "BigInt"
+
+
+def test_property_name_is_derived_from_physical_data_property_name():
+    ontology, _ids, _bag = build(PHYSICAL_TTL)
+    assert "employeesNumber" in ontology.entities["Customer"].properties
+    assert "Customer_EmployeesNumber" not in ontology.entities["Customer"].properties
+
+
+def test_missing_physical_data_property_name_falls_back_to_local_name_with_warning():
+    ontology, _ids, bag = build(PHYSICAL_TTL)
+    assert "Customer_LegacyNotes" in ontology.entities["Customer"].properties
+    assert "W11" in {d.rule for d in bag}
+
+
+def test_empty_physical_data_property_name_falls_back_to_local_name_with_warning():
+    ontology, _ids, bag = build(PHYSICAL_TTL)
+    assert "Customer_EmptyPhysicalName" in ontology.entities["Customer"].properties
+    assert "W11" in {d.rule for d in bag}
+
+
+def test_same_class_duplicate_physical_names_are_deduplicated():
+    ontology, _ids, bag = build(PHYSICAL_TTL)
+    props = ontology.entities["Customer"].properties
+    assert "dupName" in props and "dupName2" in props
+    assert "L-NAME-DUP" in {d.rule for d in bag}
+
+
+def test_cross_entity_valuetype_conflict_falls_back_to_local_names_with_warning():
+    ontology, _ids, bag = build(PHYSICAL_TTL)
+    assert "sourceSystemId" not in ontology.entities["Customer"].properties
+    assert "sourceSystemId" not in ontology.entities["Order"].properties
+    assert "Customer_SourceSystemId" in ontology.entities["Customer"].properties
+    assert "Order_SourceSystemId" in ontology.entities["Order"].properties
+    assert "W12" in {d.rule for d in bag}
+
+
+def test_cross_entity_valuetype_conflict_produces_no_hard_error():
+    _ontology, _ids, bag = build(PHYSICAL_TTL)
+    assert not bag.has_errors(), [str(d) for d in bag.errors]
+
+
+def test_physical_name_colliding_with_fk_column_collapses_into_one_property():
+    ontology, _ids, bag = build(PHYSICAL_TTL)
+    assert "regionCode" in ontology.entities["Customer"].properties
+    assert "W10" not in {d.rule for d in bag}
+
+
+def test_entity_key_configured_by_rdf_local_name_still_resolves_to_derived_name():
+    config = Config()
+    config.entities = {"Customer": {"key": ["Customer_CustomerKey"]}}
+    ontology, _ids, _bag = build(PHYSICAL_TTL, config)
+    assert ontology.entities["Customer"].key == ["customerKey"]
+
+
+def test_override_valuetype_keyed_by_rdf_local_name_still_applies_after_rename():
+    config = Config()
+    config.value_type_overrides = {"Customer_EmployeesNumber": "String"}
+    ontology, _ids, _bag = build(PHYSICAL_TTL, config)
+    assert ontology.entities["Customer"].properties["employeesNumber"].value_type == "String"

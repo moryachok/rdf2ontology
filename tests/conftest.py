@@ -97,6 +97,49 @@ ex:Address rdfs:subClassOf
     [ a owl:Restriction ; owl:onProperty ex:AddressKey ; owl:cardinality "1"^^xsd:nonNegativeInteger ] .
 """
 
+# Mirrors the Telco vocabulary's "<Class>_<Property>" local names carrying a camelCase
+# physicalDataPropertyName. Covers: a plain rename, a missing annotation, an empty annotation,
+# a same-class duplicate physical name, a cross-entity valueType conflict (sourceSystemId), and
+# a datatype property whose physical name collides with an FK column (regionCode).
+PHYSICAL_TTL = PREFIXES + """
+ex:sourceTable  a owl:AnnotationProperty .
+ex:sourceColumn a owl:AnnotationProperty .
+ex:physicalDataPropertyName a owl:AnnotationProperty .
+
+ex:Customer a owl:Class ; ex:sourceTable "dbo.customer" .
+ex:Order a owl:Class ; ex:sourceTable "dbo.order" .
+
+ex:Customer_CustomerKey a owl:DatatypeProperty , owl:FunctionalProperty ;
+    ex:physicalDataPropertyName "customerKey" ; rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:Customer_EmployeesNumber a owl:DatatypeProperty ;
+    ex:physicalDataPropertyName "employeesNumber" ; rdfs:domain ex:Customer ; rdfs:range xsd:integer .
+ex:Customer_LegacyNotes a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:Customer_EmptyPhysicalName a owl:DatatypeProperty ;
+    ex:physicalDataPropertyName "" ; rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:Customer_RegionCodeA a owl:DatatypeProperty ;
+    ex:physicalDataPropertyName "dupName" ; rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:Customer_RegionCodeB a owl:DatatypeProperty ;
+    ex:physicalDataPropertyName "dupName" ; rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:Customer_SourceSystemId a owl:DatatypeProperty ;
+    ex:physicalDataPropertyName "sourceSystemId" ; rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:Customer_RegionCode a owl:DatatypeProperty ;
+    ex:physicalDataPropertyName "regionCode" ; rdfs:domain ex:Customer ; rdfs:range xsd:string .
+
+ex:Order_OrderKey a owl:DatatypeProperty , owl:FunctionalProperty ;
+    ex:physicalDataPropertyName "orderKey" ; rdfs:domain ex:Order ; rdfs:range xsd:string .
+ex:Order_SourceSystemId a owl:DatatypeProperty ;
+    ex:physicalDataPropertyName "sourceSystemId" ; rdfs:domain ex:Order ; rdfs:range xsd:integer .
+
+ex:hasRegion a owl:ObjectProperty ;
+    ex:sourceColumn "regionCode" ; rdfs:domain ex:Customer ; rdfs:range ex:Order .
+
+ex:Customer rdfs:subClassOf
+    [ a owl:Restriction ; owl:onProperty ex:Customer_CustomerKey ; owl:cardinality "1"^^xsd:nonNegativeInteger ] .
+ex:Order rdfs:subClassOf
+    [ a owl:Restriction ; owl:onProperty ex:Order_OrderKey ; owl:cardinality "1"^^xsd:nonNegativeInteger ] .
+"""
+
 
 def custom_attributes_config() -> Config:
     """A Config with the three customAttributes lists populated, mirroring telco_main.overrides.yaml."""

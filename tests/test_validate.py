@@ -16,7 +16,7 @@ from rdf2ontology.ir import (
 )
 from rdf2ontology.validate import validate_item_dir, validate_ontology
 
-from conftest import CLEAN_TTL, PREFIXES, build
+from conftest import CLEAN_TTL, PHYSICAL_TTL, PREFIXES, build
 
 
 def _config(**defaults) -> Config:
@@ -93,6 +93,13 @@ def test_e4_conflicting_value_types_across_entities():
     other.properties["CustomerKey"] = PropertyIR("CustomerKey", "iri", "BigInt", "CustomerKey")
     ontology.entities["Address"] = other
     assert "E4" in _rules(_validate(ontology))
+
+
+def test_physical_data_property_name_conflict_is_resolved_before_validation():
+    """mapping.py falls back to RDF local names on conflict, so validate never has to raise E4 for it."""
+    ontology, _ids, mapping_bag = build(PHYSICAL_TTL)
+    assert "W12" in {d.rule for d in mapping_bag}
+    assert "E4" not in _rules(_validate(ontology))
 
 
 def test_e5_name_in_both_property_arrays():

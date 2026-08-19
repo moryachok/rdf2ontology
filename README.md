@@ -333,6 +333,12 @@ exclude:
 | No source table on a class | Emitted as a schema-only (unbound) entity type |
 | No `--workspace-id`/`--lakehouse-id` and no config | Binding emitted with a placeholder GUID; `deploy` refuses to publish it |
 
+A data property's `physicalDataPropertyName` annotation, when present, becomes the emitted
+property name instead of the RDF local name (e.g. `Customer_EmployeesNumber` with
+`physicalDataPropertyName "employeesNumber"` → `employeesNumber`; `W11` if the annotation is
+missing or empty). If that name would otherwise land on two entity types with different
+`valueType`s — which Fabric rejects — the RDF local name is used instead (`W12`).
+
 Every substitution is recorded — check the `auto-renamed` section of the build summary, or
 `ontology.renames` / the `renames` block in `<Name>.id-map.json` and the JSON report. Two things
 are **never** silently guessed: a *bound* entity type with no resolvable key (hard error, `E3`),
@@ -495,7 +501,9 @@ folders only — the RDF path already warns via `L-PUN`) · `E15` config referen
 `W1` name length · `W2` unmapped range · `W3` unbound entity · `W4` dropped relationship ·
 `W5` missing contextualization · `W6` `Boolean` on a 0/1 column · `W7` placeholder GUID (workspace
 or lakehouse id unresolved) · `W8` unsafe column name · `W9` keyless entity · `W10` a foreign key
-was also emitted as a scalar property.
+was also emitted as a scalar property · `W11` data property has no `physicalDataPropertyName`
+annotation, RDF local name used instead · `W12` derived property name conflicts with a different
+`valueType` on another entity type, RDF local name used instead.
 
 ### Exit codes
 

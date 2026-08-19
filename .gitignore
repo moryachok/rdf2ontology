@@ -15,6 +15,7 @@ build/
 # Per-ontology config overrides: keep only the generic defaults.yaml tracked
 config/*
 !config/defaults.yaml
+!config/config.readme.md
 
 # Coverage
 .coverage
