@@ -108,6 +108,9 @@ python3 -m rdf2ontology lint --input my.ttl --ignore L-ORPHAN --ignore L-NAME-LE
 | `--fail-on error\|warning` | Exit non-zero threshold (default `error`) |
 | `--ignore RULE` | Repeatable; also settable as `lint.ignore` in the config |
 | `--strict` | Promote every warning to an error |
+| `--require-physical-tables` | Probe Fabric and drop entity/relationship types whose declared source table does not exist yet (see [below](#tables-that-dont-exist-yet---require-physical-tables)) |
+| `--skip-unbound-entities` | Drop entity types with no declared source table (overrides `defaults.emitUnboundEntities`) |
+| `--skip-unbound-relationships` | Drop relationship types with no contextualization (overrides `defaults.emitUnboundRelationships`) |
 
 ### `build` — lint, map, validate, emit
 
@@ -138,6 +141,7 @@ python3 -m rdf2ontology build \
 | `--check-only` | Run everything, write nothing |
 | `--json-report` | Write the full build report as JSON |
 | `--verbose` | Include `info` diagnostics |
+| `--require-physical-tables` / `--skip-unbound-entities` / `--skip-unbound-relationships` | See [`lint`](#lint--step-one-always) above and the [worked example](#tables-that-dont-exist-yet---require-physical-tables) below |
 
 Sample output for the RDF-only run (no config, no flags):
 
@@ -422,6 +426,54 @@ contextualization. Both raise warnings so the gap stays visible, and neither blo
 Set `defaults.emitUnboundEntities: false` to suppress, or prune individually with
 `exclude.classes`.
 
+### Tables that don't exist yet (`--require-physical-tables`)
+
+A migration is rarely one shot: the RDF/config may already declare a `sourceTable` for a class
+while the physical table hasn't landed in the lakehouse yet. Left alone, that produces an entity
+type whose `DataBindings/` points at a table Fabric can't see, which breaks the ontology item.
+
+Pass `--require-physical-tables` and the tool probes the Fabric REST API (falling back to OneLake
+for schema-enabled lakehouses) for the tables that actually exist, and **drops** any entity type
+whose declared table is missing — along with every relationship type that depends on it. This is
+separate from "unbound" (no declared table at all): here the table *is* declared, it just isn't
+there yet. It requires `az login` (or another `AzureCliCredential`-compatible session) and a
+resolved `--workspace-id`/`--lakehouse-id` or `fabric.lakehouses` entry; an unresolved lakehouse id
+is reported as *unverifiable* and the entity is kept (fail open — never silently empties the
+ontology on an auth or network error).
+
+```bash
+az login
+python3 -m rdf2ontology lint --input ontology-items/rdf/customer_address.ttl \
+                             --config rdf2ontology/config/telco_main.overrides.yaml \
+                             --require-physical-tables
+```
+
+```
+== Lint ontology-items/rdf/customer_address.ttl ==
+  warning L-SRC-TABLE-MISSING [Contact] source table 'bronze.contact' does not exist in the lakehouse; will be dropped
+  -- 0 error(s), 1 warning(s), 0 info, 0 ignored
+```
+
+```bash
+python3 -m rdf2ontology build --input ontology-items/rdf/customer_address.ttl \
+                              --config rdf2ontology/config/telco_main.overrides.yaml \
+                              --output build --require-physical-tables
+```
+
+```
+== Ontology 'CustomerAddressOntology' ==
+  entity types      : 22 (2 bound, 20 unbound)
+  relationship types: 27 (10 contextualized)
+  ...
+  skipped (physical table not found):
+    - Contact: bronze.contact
+  written           : 63 file(s) -> build/CustomerAddressOntology.Ontology
+```
+
+`Contact`'s id stays reserved in the id map (rather than pruned), so once `bronze.contact` shows up
+in the lakehouse a rebuild reuses the same id for the entity type — no `--allow-new-ids` needed.
+The skipped set is also written under `skippedMissingTable` in `--json-report`.
+
 ---
 
 ## IDs
@@ -482,8 +534,10 @@ With an existing map, `build` reuses every known id and refuses to mint new ones
 | `L-KEY` | warning | No key candidate resolvable |
 | `L-FK-MISSING` | warning | Object property without a source column |
 | `L-RESTRICTION` | warning | Restriction outside the class's domain closure |
+| `L-SRC-TABLE-MISSING` | warning | (`--require-physical-tables` only) declared source table does not exist in the lakehouse — entity type will be dropped |
 | `L-INVERSE` | info | Inverse pair — one side will be dropped |
 | `L-ORPHAN` | info | Class with no properties and no relationships |
+| `L-SRC-TABLE-UNVERIFIED` | info | (`--require-physical-tables` only) table existence could not be verified (unresolved lakehouse id) — entity type kept |
 
 Only `L-PARSE`, `L-RANGE-CONFLICT` and (when a config names a lakehouse) `L-SRC-LAKEHOUSE` block
 `build`. Everything else is auto-resolved and reported, never silently dropped.
@@ -503,7 +557,10 @@ folders only — the RDF path already warns via `L-PUN`) · `E15` config referen
 or lakehouse id unresolved) · `W8` unsafe column name · `W9` keyless entity · `W10` a foreign key
 was also emitted as a scalar property · `W11` data property has no `physicalDataPropertyName`
 annotation, RDF local name used instead · `W12` derived property name conflicts with a different
-`valueType` on another entity type, RDF local name used instead.
+`valueType` on another entity type, RDF local name used instead · `W3c` (`--require-physical-tables`
+only) entity type, timeseries binding or contextualization dropped because its table does not exist
+· `W3d` the Fabric table probe itself failed (auth/network) — affected tables treated as
+unverifiable rather than missing.
 
 ### Exit codes
 

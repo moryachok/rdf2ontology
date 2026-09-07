@@ -171,8 +171,14 @@ class IdMap:
         self.prune(ontology)
 
     def prune(self, ontology: OntologyIR) -> None:
-        """Drop map entries for concepts that no longer exist, so the file stays honest."""
+        """Drop map entries for concepts that no longer exist, so the file stays honest.
+
+        Entities skipped by --require-physical-tables are kept in the map (not pruned), so
+        the id is reused once the backing table shows up, without needing --allow-new-ids.
+        """
         for name in list(self.entity_types):
+            if name in ontology.skipped_entities:
+                continue
             if name not in ontology.entities:
                 del self.entity_types[name]
                 continue

@@ -9,7 +9,8 @@ from rdflib.namespace import OWL, RDF, RDFS, XSD
 
 from .config import Config
 from .diagnostics import DiagnosticBag
-from .mapping import resolve_key, sanitize_name, value_type_for_range
+from .fabric_tables import TableIndex
+from .mapping import _entity_source, _missing_table_reason, resolve_key, sanitize_name, value_type_for_range
 from .rdf_model import GraphModel, local_name
 
 NAME_REGEX = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,127}$")
@@ -34,6 +35,8 @@ RULES: dict[str, str] = {
     "L-CLASSEXPR": "Unsupported class expression in domain/range",
     "L-SRC-TABLE": "Class has no source-table annotation",
     "L-SRC-TABLE-FORMAT": "Source-table annotation is not schema.table",
+    "L-SRC-TABLE-MISSING": "Source table does not exist in the lakehouse (--require-physical-tables)",
+    "L-SRC-TABLE-UNVERIFIED": "Source table existence could not be verified (unresolved lakehouse id)",
     "L-SRC-LAKEHOUSE": "sourceLakehouse has no matching config entry",
     "L-SRC-COLUMN": "Property on a bound class has no source-column annotation",
     "L-SRC-COLUMN-UNSAFE": "Source column name risks delta column mapping",
@@ -48,14 +51,14 @@ def _is_reserved(iri: str) -> bool:
     return any(iri.startswith(prefix) for prefix in _RESERVED_NAMESPACES)
 
 
-def lint(model: GraphModel, config: Config, bag: Optional[DiagnosticBag] = None) -> DiagnosticBag:
+def lint(model: GraphModel, config: Config, bag: Optional[DiagnosticBag] = None, table_index: Optional[TableIndex] = None) -> DiagnosticBag:
     bag = bag if bag is not None else DiagnosticBag()
     max_length = int(config.flag("maxPortalNameLength") or 26)
 
     _lint_punning(model, bag)
     _lint_names(model, bag, max_length)
     _lint_property_shape(model, bag)
-    _lint_classes(model, config, bag)
+    _lint_classes(model, config, bag, table_index)
     _lint_object_properties(model, bag)
     return bag
 
@@ -140,7 +143,7 @@ def _lint_property_shape(model: GraphModel, bag: DiagnosticBag) -> None:
             )
 
 
-def _lint_classes(model: GraphModel, config: Config, bag: DiagnosticBag) -> None:
+def _lint_classes(model: GraphModel, config: Config, bag: DiagnosticBag, table_index: Optional[TableIndex] = None) -> None:
     used_in_relationships: set[str] = set()
     for prop in model.object_properties():
         used_in_relationships.update(prop.domains)
@@ -163,6 +166,22 @@ def _lint_classes(model: GraphModel, config: Config, bag: DiagnosticBag) -> None
                 f"sourceLakehouse '{lakehouse}' has no entry under fabric.lakehouses",
                 record.name,
             )
+
+        if table_ref and table_index is not None:
+            source_lakehouse, source_schema, source_table = _entity_source(model, config, class_iri)
+            ref = config.lakehouse(source_lakehouse)
+            if table_index.is_unverifiable(ref):
+                bag.info(
+                    "L-SRC-TABLE-UNVERIFIED",
+                    "source table existence could not be verified (unresolved lakehouse id); entity type kept",
+                    record.name,
+                )
+            elif _missing_table_reason(config, table_index, source_lakehouse, source_schema, source_table):
+                bag.warning(
+                    "L-SRC-TABLE-MISSING",
+                    f"source table '{source_schema}.{source_table}' does not exist in the lakehouse; will be dropped",
+                    record.name,
+                )
 
         data_properties = model.properties_of(class_iri, "data")
         for prop in sorted(data_properties, key=lambda p: p.name):

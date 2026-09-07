@@ -48,6 +48,10 @@ def render_summary(ontology: OntologyIR, result: Optional[EmitResult] = None) ->
         lines.append("  bindings still missing (backlog):")
         for entity in sorted(unbound, key=lambda e: e.name):
             lines.append(f"    - {entity.name}")
+    if ontology.skipped_entities:
+        lines.append("  skipped (physical table not found):")
+        for entity_name, reason in sorted(ontology.skipped_entities.items()):
+            lines.append(f"    - {entity_name}: {reason}")
     if result is not None:
         lines.append(f"  written           : {len(result.files)} file(s) -> {result.item_dir}")
         if result.parameter_file:
@@ -81,6 +85,7 @@ def json_report(
     return {
         "ontology": ontology.name,
         "renames": dict(ontology.renames),
+        "skippedMissingTable": dict(ontology.skipped_entities),
         "entityTypes": {
             name: {
                 "bound": entity.bound,

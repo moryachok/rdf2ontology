@@ -13,6 +13,7 @@ from .deploy import DeployError, deploy
 from .diagnostics import DiagnosticBag
 from .diff import diff_items
 from .emit import emit
+from .fabric_tables import FabricTableProbe, TableIndex, TableProbeError
 from .ids import IdMap, IdMapError
 from .ir import OntologyIR
 from .lint import lint
@@ -42,19 +43,47 @@ def _default_name(
     return "Ontology"
 
 
-def _load(args) -> tuple[Config, GraphModel, DiagnosticBag]:
+def _load(args) -> tuple[Config, GraphModel, DiagnosticBag, Optional[TableIndex]]:
     config = load_config(getattr(args, "config", None))
     apply_cli_overrides(
         config,
         workspace_id=getattr(args, "workspace_id", None),
         lakehouse_ids=getattr(args, "lakehouse_id", None),
         schema=getattr(args, "schema", None),
+        require_physical_tables=getattr(args, "require_physical_tables", None),
+        emit_unbound_entities=(False if getattr(args, "skip_unbound_entities", False) else None),
+        emit_unbound_relationships=(False if getattr(args, "skip_unbound_relationships", False) else None),
     )
     _graph, model = load_graph(Path(args.input), config)
     ignore = list(config.lint_ignore) + list(getattr(args, "ignore", None) or [])
     bag = DiagnosticBag(ignore=ignore, strict=bool(getattr(args, "strict", False)))
-    lint(model, config, bag)
-    return config, model, bag
+    table_index = _build_table_index(config, bag)
+    lint(model, config, bag, table_index)
+    _report_table_probe_errors(table_index, bag)
+    return config, model, bag, table_index
+
+
+def _report_table_probe_errors(table_index: Optional[TableIndex], bag: DiagnosticBag) -> None:
+    """Surface (and clear) any probe failures recorded on a FabricTableProbe; fail-open elsewhere already applied."""
+    errors = getattr(table_index, "errors", None)
+    if not errors:
+        return
+    for message in errors:
+        bag.warning("W3d", f"Fabric table probe failed ({message}); affected tables treated as unverifiable")
+    errors.clear()
+
+
+def _build_table_index(config: Config, bag: DiagnosticBag) -> Optional[TableIndex]:
+    if not config.flag("requirePhysicalTables"):
+        return None
+    try:
+        return FabricTableProbe()
+    except TableProbeError as exc:
+        bag.warning(
+            "W3d",
+            f"could not initialize the Fabric table probe ({exc}); proceeding as if every table exists",
+        )
+        return None
 
 
 def _lint_failed(bag: DiagnosticBag, config: Config, args) -> bool:
@@ -65,7 +94,7 @@ def _lint_failed(bag: DiagnosticBag, config: Config, args) -> bool:
 
 
 def cmd_lint(args) -> int:
-    config, _model, bag = _load(args)
+    config, _model, bag, _table_index = _load(args)
     if args.format == "json":
         print(json.dumps({"counts": bag.counts(), "diagnostics": bag.to_list()}, indent=2))
     else:
@@ -74,7 +103,7 @@ def cmd_lint(args) -> int:
 
 
 def cmd_build(args) -> int:
-    config, model, lint_bag = _load(args)
+    config, model, lint_bag, table_index = _load(args)
     print(render_diagnostics(lint_bag, f"Lint {args.input}", show_info=args.verbose))
     if _lint_failed(lint_bag, config, args):
         print("\nbuild aborted: fix the RDF (or pass --ignore <RULE>) before building.", file=sys.stderr)
@@ -82,7 +111,8 @@ def cmd_build(args) -> int:
 
     name = _default_name(config, Path(args.input), args.name, model)
     build_bag = DiagnosticBag(ignore=lint_bag.ignore, strict=bool(args.strict))
-    ontology: OntologyIR = build_ontology(model, config, name, build_bag)
+    ontology: OntologyIR = build_ontology(model, config, name, build_bag, table_index)
+    _report_table_probe_errors(table_index, build_bag)
 
     id_map_path = Path(args.id_map) if args.id_map else Path(args.output) / f"{name}.id-map.json"
     id_map = IdMap.load(id_map_path, name, allow_new=True)
@@ -133,14 +163,14 @@ def cmd_validate(args) -> int:
         print(render_diagnostics(bag, f"Validate {args.item}"))
         return EXIT_VALIDATION if bag.has_errors() else EXIT_OK
 
-    config, model, lint_bag = _load(args)
+    config, model, lint_bag, table_index = _load(args)
     print(render_diagnostics(lint_bag, f"Lint {args.input}", show_info=False))
     if _lint_failed(lint_bag, config, args):
         return EXIT_LINT
 
     name = _default_name(config, Path(args.input), args.name, model)
     bag = DiagnosticBag(ignore=lint_bag.ignore, strict=bool(args.strict))
-    ontology = build_ontology(model, config, name, bag)
+    ontology = build_ontology(model, config, name, bag, table_index)
     id_map = IdMap(ontology_name=name, allow_new=True)
     id_map.assign(ontology, source_rdf=str(args.input))
     validate_ontology(ontology, id_map, config, bag)
@@ -202,6 +232,24 @@ def build_parser() -> argparse.ArgumentParser:
         )
         sub.add_argument("--strict", action="store_true", help="treat warnings as errors")
         sub.add_argument("--ignore", action="append", metavar="RULE", help="ignore a lint/validation rule (repeatable)")
+        sub.add_argument(
+            "--require-physical-tables",
+            action="store_true",
+            default=None,
+            help="probe Fabric and drop entity/relationship types whose declared source table does not exist yet",
+        )
+        sub.add_argument(
+            "--skip-unbound-entities",
+            action="store_true",
+            default=False,
+            help="drop entity types that have no declared source table (overrides defaults.emitUnboundEntities)",
+        )
+        sub.add_argument(
+            "--skip-unbound-relationships",
+            action="store_true",
+            default=False,
+            help="drop relationship types with no contextualization (overrides defaults.emitUnboundRelationships)",
+        )
 
     lint_parser = subparsers.add_parser("lint", help="step 1: lint the RDF graph")
     lint_parser.add_argument("--input", required=True, help="RDF file (Turtle, RDF/XML, JSON-LD, ...)")

@@ -199,6 +199,8 @@ def _check_config_references(ontology: OntologyIR, config: Config, bag: Diagnost
     for name in config.entities:
         if name in ontology.entities or config.rename(name) in ontology.entities:
             continue
+        if name in ontology.skipped_entities or ontology.renames.get(f"entity:{name}", name) in ontology.skipped_entities:
+            continue
         if config.is_class_excluded(name) or not config.flag("emitUnboundEntities"):
             continue
         bag.error("E15", "config references an entity type that is not in the ontology", name)

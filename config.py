@@ -36,6 +36,7 @@ _SECTION_KEYS: dict[str, set[str]] = {
         "maxPortalNameLength",
         "unmappedRangeValueType",
         "autoPrefixTimeseries",
+        "requirePhysicalTables",
     },
     "lint": {"failOn", "ignore"},
     "overrides": {"valueTypes", "rename"},
@@ -57,6 +58,7 @@ _DEFAULTS: dict[str, Any] = {
     "maxPortalNameLength": 26,
     "unmappedRangeValueType": "String",
     "autoPrefixTimeseries": True,
+    "requirePhysicalTables": False,
 }
 
 _RDF_DEFAULTS: dict[str, Any] = {
@@ -166,8 +168,21 @@ def apply_cli_overrides(
     workspace_id: Optional[str] = None,
     lakehouse_ids: Optional[list[str]] = None,
     schema: Optional[str] = None,
+    require_physical_tables: Optional[bool] = None,
+    emit_unbound_entities: Optional[bool] = None,
+    emit_unbound_relationships: Optional[bool] = None,
 ) -> None:
-    """Wire --workspace-id/--lakehouse-id/--schema into the config, config values winning."""
+    """Wire --workspace-id/--lakehouse-id/--schema into the config, config values winning.
+
+    The three boolean flags are the exception: an explicit CLI flag always wins, since they
+    have no established "config wins" precedent and a user passing the flag clearly wants it.
+    """
+    if require_physical_tables is not None:
+        config.defaults["requirePhysicalTables"] = require_physical_tables
+    if emit_unbound_entities is not None:
+        config.defaults["emitUnboundEntities"] = emit_unbound_entities
+    if emit_unbound_relationships is not None:
+        config.defaults["emitUnboundRelationships"] = emit_unbound_relationships
     if workspace_id:
         config.cli_workspace_id = workspace_id
         if config.workspace_id == PLACEHOLDER_GUID:

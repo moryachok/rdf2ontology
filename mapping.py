@@ -9,6 +9,7 @@ from rdflib.namespace import RDF, XSD
 
 from .config import Config
 from .diagnostics import DiagnosticBag
+from .fabric_tables import TableIndex
 from .ir import (
     ContextualizationIR,
     EntityIR,
@@ -164,7 +165,23 @@ def _resolve_value_type(
     return value_type
 
 
-def _conflicting_derived_names(model: GraphModel, config: Config, unmapped_default: str) -> set[str]:
+def _missing_table_reason(
+    config: Config, table_index: Optional[TableIndex], lakehouse: Optional[str], schema: Optional[str], table: Optional[str]
+) -> Optional[str]:
+    """None when the table is fine to bind (including 'unverifiable'); else 'schema.table' to drop/report."""
+    if table_index is None or table is None:
+        return None
+    ref = config.lakehouse(lakehouse)
+    resolved_schema = schema or ref.default_schema
+    exists = table_index.has(ref, resolved_schema, table)
+    if exists is None or exists:
+        return None
+    return f"{resolved_schema}.{table}"
+
+
+def _conflicting_derived_names(
+    model: GraphModel, config: Config, unmapped_default: str, table_index: Optional[TableIndex] = None
+) -> set[str]:
     """Derived names that would land on two entity types with different valueTypes; Fabric rejects those."""
     emit_unbound = bool(config.flag("emitUnboundEntities"))
     emit_fk = bool(config.flag("emitForeignKeyProperties"))
@@ -174,8 +191,10 @@ def _conflicting_derived_names(model: GraphModel, config: Config, unmapped_defau
         record = model.classes[class_iri]
         if config.is_class_excluded(record.name):
             continue
-        _, _, table = _entity_source(model, config, class_iri)
+        lakehouse, schema, table = _entity_source(model, config, class_iri)
         if table is None and not emit_unbound:
+            continue
+        if _missing_table_reason(config, table_index, lakehouse, schema, table) is not None:
             continue
         entity_name = sanitize_name(config.rename(record.name))
         for prop in model.properties_of(class_iri, "data"):
@@ -257,11 +276,13 @@ def _entity_source(model: GraphModel, config: Config, class_iri: str) -> tuple[O
     return lakehouse, schema, table
 
 
-def build_ontology(model: GraphModel, config: Config, name: str, diagnostics: DiagnosticBag) -> OntologyIR:
+def build_ontology(
+    model: GraphModel, config: Config, name: str, diagnostics: DiagnosticBag, table_index: Optional[TableIndex] = None
+) -> OntologyIR:
     ontology = OntologyIR(name=name, logical_id=config.logical_id)
     emit_unbound = bool(config.flag("emitUnboundEntities"))
     unmapped_default = config.flag("unmappedRangeValueType") or "String"
-    conflicting_names = _conflicting_derived_names(model, config, unmapped_default)
+    conflicting_names = _conflicting_derived_names(model, config, unmapped_default, table_index)
 
     class_by_iri: dict[str, str] = {}
     taken_entity_names: set[str] = set()
@@ -277,7 +298,18 @@ def build_ontology(model: GraphModel, config: Config, name: str, diagnostics: Di
             diagnostics.warning("W3b", "class has no source table and emitUnboundEntities is false", raw_name)
             continue
 
+        # Reserve the name before checking the table, so a skipped entity's name stays taken
+        # and other entities' auto-dedup suffixes stay stable whether or not the table is missing.
         entity_name = _finalize_name(config.rename(raw_name), taken_entity_names, diagnostics, raw_name, "entity", ontology)
+
+        missing_table = _missing_table_reason(config, table_index, lakehouse, schema, table)
+        if missing_table is not None:
+            diagnostics.warning(
+                "W3c", f"source table '{missing_table}' was not found in the lakehouse; entity type skipped", raw_name
+            )
+            ontology.skipped_entities[entity_name] = missing_table
+            continue
+
         entity = EntityIR(
             name=entity_name,
             iri=class_iri,
@@ -336,8 +368,8 @@ def build_ontology(model: GraphModel, config: Config, name: str, diagnostics: Di
                 diagnostics.warning("W9", "entity type emitted keyless (entityIdParts: [])", entity_name)
         entity.display_name_property = resolve_display_name(entity, config, raw_name)
 
-    _apply_timeseries(ontology, config, diagnostics)
-    _build_relationships(model, config, ontology, class_by_iri, diagnostics)
+    _apply_timeseries(ontology, config, diagnostics, table_index)
+    _build_relationships(model, config, ontology, class_by_iri, diagnostics, table_index)
     _report_unbound(ontology, diagnostics)
     return ontology
 
@@ -424,17 +456,28 @@ def _build_property(
     )
 
 
-def _apply_timeseries(ontology: OntologyIR, config: Config, diagnostics: DiagnosticBag) -> None:
+def _apply_timeseries(
+    ontology: OntologyIR, config: Config, diagnostics: DiagnosticBag, table_index: Optional[TableIndex] = None
+) -> None:
     for entity_name, entry in config.entities.items():
         blocks = entry.get("timeseries") or []
         if not blocks:
             continue
         entity = ontology.entities.get(entity_name)
         if entity is None:
-            diagnostics.error("E15", "timeseries configured for an unknown entity type", entity_name)
+            if entity_name not in ontology.skipped_entities:
+                diagnostics.error("E15", "timeseries configured for an unknown entity type", entity_name)
             continue
         for block in blocks:
             schema, table = split_table(block["table"])
+            lakehouse = block.get("lakehouse") or entity.lakehouse
+            resolved_schema = schema or config.lakehouse(lakehouse).default_schema
+            missing_table = _missing_table_reason(config, table_index, lakehouse, resolved_schema, table)
+            if missing_table is not None:
+                diagnostics.warning(
+                    "W3c", f"timeseries source table '{missing_table}' was not found; binding skipped", entity_name
+                )
+                continue
             names: list[str] = []
             for prop_name in block.get("properties") or []:
                 prop = entity.properties.get(prop_name)
@@ -448,11 +491,11 @@ def _apply_timeseries(ontology: OntologyIR, config: Config, diagnostics: Diagnos
                 names.append(prop.name)
             entity.timeseries.append(
                 TimeSeriesBindingIR(
-                    schema=schema or config.lakehouse(entity.lakehouse).default_schema,
+                    schema=resolved_schema,
                     table=table,
                     timestamp_column=block["timestampColumn"],
                     property_names=names,
-                    lakehouse=block.get("lakehouse") or entity.lakehouse,
+                    lakehouse=lakehouse,
                 )
             )
 
@@ -463,6 +506,7 @@ def _build_relationships(
     ontology: OntologyIR,
     class_by_iri: dict[str, str],
     diagnostics: DiagnosticBag,
+    table_index: Optional[TableIndex] = None,
 ) -> None:
     emit_inverses = bool(config.flag("emitInverseRelationships"))
     emit_unbound_rels = bool(config.flag("emitUnboundRelationships"))
@@ -489,7 +533,14 @@ def _build_relationships(
                 target = class_by_iri.get(range_iri)
                 if source is None or target is None:
                     missing = model.class_name(domain_iri if source is None else range_iri)
-                    diagnostics.warning("W3b", f"dropped: end '{missing}' is not an emitted entity type", prop.name)
+                    final_missing = ontology.renames.get(f"entity:{missing}", missing)
+                    reason = ontology.skipped_entities.get(final_missing)
+                    if reason:
+                        diagnostics.warning(
+                            "W3b", f"dropped: end '{missing}' was skipped (source table '{reason}' not found)", prop.name
+                        )
+                    else:
+                        diagnostics.warning("W3b", f"dropped: end '{missing}' is not an emitted entity type", prop.name)
                     continue
                 pairs.append((source, target))
 
@@ -517,7 +568,7 @@ def _build_relationships(
                 custom_attributes=custom_attributes,
             )
             relationship.contextualization = _build_contextualization(
-                relationship, prop, entry, config, ontology, diagnostics
+                relationship, prop, entry, config, ontology, diagnostics, table_index
             )
             if relationship.contextualization is None and not emit_unbound_rels:
                 diagnostics.warning("W5", "relationship dropped: no contextualization and emitUnboundRelationships is false", name)
@@ -532,6 +583,7 @@ def _build_contextualization(
     config: Config,
     ontology: OntologyIR,
     diagnostics: DiagnosticBag,
+    table_index: Optional[TableIndex] = None,
 ) -> Optional[ContextualizationIR]:
     source = ontology.entities[relationship.source_entity]
     target = ontology.entities[relationship.target_entity]
@@ -551,6 +603,13 @@ def _build_contextualization(
         return None
     if not schema:
         schema = config.lakehouse(lakehouse).default_schema
+
+    missing_table = _missing_table_reason(config, table_index, lakehouse, schema, table)
+    if missing_table is not None:
+        diagnostics.warning(
+            "W3c", f"no contextualization: link table '{missing_table}' was not found in the lakehouse", relationship.name
+        )
+        return None
 
     source_columns = list(entry.get("sourceKeyColumns") or source.key_columns())
     target_columns = list(entry.get("targetKeyColumns") or [])

@@ -93,6 +93,8 @@ class OntologyIR:
     relationships: list[RelationshipIR] = field(default_factory=list)
     # "kind:original-rdf-local-name" -> emitted name, for every auto-resolved rename.
     renames: dict[str, str] = field(default_factory=dict)
+    # raw RDF class name -> "schema.table" reason, for entities dropped by --require-physical-tables.
+    skipped_entities: dict[str, str] = field(default_factory=dict)
 
     def bound_entities(self) -> list[EntityIR]:
         return [e for e in self.entities.values() if e.bound]
