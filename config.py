@@ -120,10 +120,11 @@ class Config:
         if len(self.lakehouses) == 1:
             return next(iter(self.lakehouses.values()))
         item_id = (self.cli_lakehouse_ids.get(name) if name else None) or self.cli_lakehouse_id or PLACEHOLDER_GUID
+        workspace_id = self.cli_workspace_id or (self.workspace_id if self.workspace_id != PLACEHOLDER_GUID else None)
         return LakehouseRef(
             name=name or "default",
             item_id=item_id,
-            workspace_id=self.cli_workspace_id,
+            workspace_id=workspace_id,
             default_schema=self.cli_schema,
         )
 
@@ -200,8 +201,10 @@ def apply_cli_overrides(
             override = config.cli_lakehouse_ids.get(ref.name) or config.cli_lakehouse_id
             if override:
                 ref.item_id = override
-        if not ref.workspace_id and config.cli_workspace_id:
-            ref.workspace_id = config.cli_workspace_id
+        if not ref.workspace_id:
+            ref.workspace_id = config.cli_workspace_id or (
+                config.workspace_id if config.workspace_id != PLACEHOLDER_GUID else None
+            )
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -262,10 +265,13 @@ def load_config(paths: Optional[Any]) -> Config:
     for name, entry in _require_mapping(fabric.get("lakehouses"), "fabric.lakehouses").items():
         entry = _require_mapping(entry, f"fabric.lakehouses.{name}")
         _reject_unknown(f"fabric.lakehouses.{name}", entry, _LAKEHOUSE_KEYS)
+        # A lakehouse with no workspaceId of its own belongs to the ontology's own workspace;
+        # without this fallback --require-physical-tables silently never resolves the ref
+        # (is_unverifiable() stays true) and the probe never runs.
         cfg.lakehouses[name] = LakehouseRef(
             name=name,
             item_id=entry.get("itemId") or PLACEHOLDER_GUID,
-            workspace_id=entry.get("workspaceId"),
+            workspace_id=entry.get("workspaceId") or (cfg.workspace_id if cfg.workspace_id != PLACEHOLDER_GUID else None),
             default_schema=entry.get("defaultSchema") or "dbo",
         )
     cfg.environments = _require_mapping(fabric.get("environments"), "fabric.environments")

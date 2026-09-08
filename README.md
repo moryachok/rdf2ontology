@@ -437,9 +437,13 @@ for schema-enabled lakehouses) for the tables that actually exist, and **drops**
 whose declared table is missing — along with every relationship type that depends on it. This is
 separate from "unbound" (no declared table at all): here the table *is* declared, it just isn't
 there yet. It requires `az login` (or another `AzureCliCredential`-compatible session) and a
-resolved `--workspace-id`/`--lakehouse-id` or `fabric.lakehouses` entry; an unresolved lakehouse id
-is reported as *unverifiable* and the entity is kept (fail open — never silently empties the
-ontology on an auth or network error).
+**resolved workspace id** for every lakehouse in play — either `fabric.workspaceId` (inherited by
+any `fabric.lakehouses.<name>` entry with no `workspaceId` of its own), a per-lakehouse
+`workspaceId`, or `--workspace-id` on the CLI. Without one, every lookup is *unverifiable* and
+`build`/`lint` now **fail with an error** rather than silently keeping everything (this used to be
+a silent no-op — an unresolved lakehouse id is a configuration problem, not something to paper
+over). A per-lookup network/auth error still fails open for that one table (reported as `W3d`),
+so a transient blip never empties the whole ontology.
 
 ```bash
 az login
@@ -537,7 +541,7 @@ With an existing map, `build` reuses every known id and refuses to mint new ones
 | `L-SRC-TABLE-MISSING` | warning | (`--require-physical-tables` only) declared source table does not exist in the lakehouse — entity type will be dropped |
 | `L-INVERSE` | info | Inverse pair — one side will be dropped |
 | `L-ORPHAN` | info | Class with no properties and no relationships |
-| `L-SRC-TABLE-UNVERIFIED` | info | (`--require-physical-tables` only) table existence could not be verified (unresolved lakehouse id) — entity type kept |
+| `L-SRC-TABLE-UNVERIFIED` | warning | (`--require-physical-tables` only) table existence could not be verified (unresolved lakehouse id) — entity type kept; `build`/`lint` error out if this happens for every declared table |
 
 Only `L-PARSE`, `L-RANGE-CONFLICT` and (when a config names a lakehouse) `L-SRC-LAKEHOUSE` block
 `build`. Everything else is auto-resolved and reported, never silently dropped.

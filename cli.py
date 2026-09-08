@@ -73,6 +73,36 @@ def _report_table_probe_errors(table_index: Optional[TableIndex], bag: Diagnosti
     errors.clear()
 
 
+def _table_probe_ineffective(table_index: Optional[TableIndex]) -> Optional[str]:
+    """None if fine; else an error message for a --require-physical-tables run that verified nothing.
+
+    Two silent-failure modes, both of which look identical to a healthy run in the output:
+    nothing could be resolved (unusable ids), or the probe worked but not one declared table
+    matched - which in practice means the configured schema or naming convention is wrong,
+    not that the whole warehouse is empty.
+    """
+    if table_index is None:
+        return None
+    stats = table_index.stats
+    if stats.total == 0:
+        return None
+    if stats.verified_present == 0 and stats.verified_missing == 0:
+        return (
+            f"--require-physical-tables checked {stats.total} table(s) but could not verify any of them "
+            "(every lakehouse id/workspace id was unresolved, or every probe failed); "
+            "pass --workspace-id/--lakehouse-id or set fabric.workspaceId / fabric.lakehouses.<name>.itemId"
+        )
+    if stats.verified_present == 0:
+        sample = table_index.known_sample()
+        found = ("; tables that do exist include: " + ", ".join(sample)) if sample else ""
+        return (
+            f"--require-physical-tables found NONE of the {stats.verified_missing} declared table(s) in the "
+            f"lakehouse, which would emit an empty ontology; check fabric.lakehouses.<name>.defaultSchema "
+            f"and the source-table naming convention{found}"
+        )
+    return None
+
+
 def _build_table_index(config: Config, bag: DiagnosticBag) -> Optional[TableIndex]:
     if not config.flag("requirePhysicalTables"):
         return None
@@ -94,11 +124,15 @@ def _lint_failed(bag: DiagnosticBag, config: Config, args) -> bool:
 
 
 def cmd_lint(args) -> int:
-    config, _model, bag, _table_index = _load(args)
+    config, _model, bag, table_index = _load(args)
     if args.format == "json":
         print(json.dumps({"counts": bag.counts(), "diagnostics": bag.to_list()}, indent=2))
     else:
         print(render_diagnostics(bag, f"Lint {args.input}"))
+    ineffective = _table_probe_ineffective(table_index)
+    if ineffective:
+        print(f"\nerror: {ineffective}", file=sys.stderr)
+        return EXIT_INPUT
     return EXIT_LINT if _lint_failed(bag, config, args) else EXIT_OK
 
 
@@ -113,6 +147,10 @@ def cmd_build(args) -> int:
     build_bag = DiagnosticBag(ignore=lint_bag.ignore, strict=bool(args.strict))
     ontology: OntologyIR = build_ontology(model, config, name, build_bag, table_index)
     _report_table_probe_errors(table_index, build_bag)
+    ineffective = _table_probe_ineffective(table_index)
+    if ineffective:
+        print(f"\nbuild aborted: {ineffective}", file=sys.stderr)
+        return EXIT_INPUT
 
     id_map_path = Path(args.id_map) if args.id_map else Path(args.output) / f"{name}.id-map.json"
     id_map = IdMap.load(id_map_path, name, allow_new=True)
@@ -133,7 +171,7 @@ def cmd_build(args) -> int:
         return EXIT_VALIDATION
     if args.check_only:
         print()
-        print(render_summary(ontology))
+        print(render_summary(ontology, table_index=table_index))
         print("\ncheck-only: nothing was written.")
         return EXIT_OK
 
@@ -147,10 +185,10 @@ def cmd_build(args) -> int:
         return EXIT_VALIDATION
 
     print()
-    print(render_summary(ontology, result))
+    print(render_summary(ontology, result, table_index=table_index))
     print(f"  id map            : {id_map_path}")
     if args.json_report:
-        report = json_report(ontology, lint_bag, build_bag, result)
+        report = json_report(ontology, lint_bag, build_bag, result, table_index=table_index)
         Path(args.json_report).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(f"  json report       : {args.json_report}")
     return EXIT_OK
@@ -171,6 +209,11 @@ def cmd_validate(args) -> int:
     name = _default_name(config, Path(args.input), args.name, model)
     bag = DiagnosticBag(ignore=lint_bag.ignore, strict=bool(args.strict))
     ontology = build_ontology(model, config, name, bag, table_index)
+    _report_table_probe_errors(table_index, bag)
+    ineffective = _table_probe_ineffective(table_index)
+    if ineffective:
+        print(f"\nerror: {ineffective}", file=sys.stderr)
+        return EXIT_INPUT
     id_map = IdMap(ontology_name=name, allow_new=True)
     id_map.assign(ontology, source_rdf=str(args.input))
     validate_ontology(ontology, id_map, config, bag)

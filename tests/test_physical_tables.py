@@ -117,7 +117,7 @@ def test_lint_reports_missing_and_unverifiable_tables():
 
     unverifiable_bag = DiagnosticBag()
     lint(make_model(TTL, config), config, unverifiable_bag, StaticTableIndex(unverifiable_lakehouses={"lh1"}))
-    assert any(d.rule == "L-SRC-TABLE-UNVERIFIED" for d in unverifiable_bag.of(Severity.INFO))
+    assert any(d.rule == "L-SRC-TABLE-UNVERIFIED" for d in unverifiable_bag.warnings)
 
 
 def test_emitted_tree_still_validates_when_an_end_is_dropped(tmp_path):

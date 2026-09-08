@@ -6,6 +6,7 @@ from typing import Optional
 
 from .diagnostics import DiagnosticBag, Severity
 from .emit import EmitResult
+from .fabric_tables import TableIndex
 from .ir import OntologyIR
 
 _ORDER = (Severity.ERROR, Severity.WARNING, Severity.INFO)
@@ -26,7 +27,7 @@ def render_diagnostics(bag: DiagnosticBag, title: str, show_info: bool = True) -
     return "\n".join(lines)
 
 
-def render_summary(ontology: OntologyIR, result: Optional[EmitResult] = None) -> str:
+def render_summary(ontology: OntologyIR, result: Optional[EmitResult] = None, table_index: Optional[TableIndex] = None) -> str:
     bound = ontology.bound_entities()
     unbound = ontology.unbound_entities()
     with_context = [r for r in ontology.relationships if r.contextualization is not None]
@@ -36,6 +37,12 @@ def render_summary(ontology: OntologyIR, result: Optional[EmitResult] = None) ->
         f"  relationship types: {len(ontology.relationships)} ({len(with_context)} contextualized)",
         f"  properties        : {sum(len(e.properties) for e in ontology.entities.values())}",
     ]
+    if table_index is not None:
+        stats = table_index.stats
+        lines.append(
+            f"  physical tables   : {stats.verified_present} present, {stats.verified_missing} missing, "
+            f"{stats.unverified} unverified"
+        )
     keyless = sorted(e.name for e in ontology.entities.values() if not e.key)
     if keyless:
         lines.append(f"  keyless           : {', '.join(keyless)}")
@@ -81,11 +88,21 @@ def json_report(
     lint_bag: DiagnosticBag,
     validation_bag: DiagnosticBag,
     result: Optional[EmitResult] = None,
+    table_index: Optional[TableIndex] = None,
 ) -> dict:
     return {
         "ontology": ontology.name,
         "renames": dict(ontology.renames),
         "skippedMissingTable": dict(ontology.skipped_entities),
+        "physicalTables": (
+            {
+                "verifiedPresent": table_index.stats.verified_present,
+                "verifiedMissing": table_index.stats.verified_missing,
+                "unverified": table_index.stats.unverified,
+            }
+            if table_index is not None
+            else None
+        ),
         "entityTypes": {
             name: {
                 "bound": entity.bound,

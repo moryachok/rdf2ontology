@@ -171,7 +171,7 @@ def _lint_classes(model: GraphModel, config: Config, bag: DiagnosticBag, table_i
             source_lakehouse, source_schema, source_table = _entity_source(model, config, class_iri)
             ref = config.lakehouse(source_lakehouse)
             if table_index.is_unverifiable(ref):
-                bag.info(
+                bag.warning(
                     "L-SRC-TABLE-UNVERIFIED",
                     "source table existence could not be verified (unresolved lakehouse id); entity type kept",
                     record.name,
