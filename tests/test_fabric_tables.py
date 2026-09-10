@@ -5,7 +5,12 @@ import json
 from email.message import Message
 
 from rdf2ontology.config import LakehouseRef
-from rdf2ontology.fabric_tables import FABRIC_RESOURCE_SCOPE, ONELAKE_STORAGE_SCOPE, FabricTableProbe
+from rdf2ontology.fabric_tables import (
+    FABRIC_RESOURCE_SCOPE,
+    ONELAKE_STORAGE_SCOPE,
+    ONELAKE_TABLE_API_BASE,
+    FabricTableProbe,
+)
 
 
 class _FakeToken:
@@ -118,3 +123,56 @@ def test_empty_probe_result_is_a_probe_error_not_a_silent_drop(monkeypatch):
     assert probe.has(lakehouse, "dbo", "customer") is None
     assert probe.stats.unverified == 1
     assert probe.errors and "zero tables" in probe.errors[0]
+
+
+def test_columns_uses_storage_scope_and_catalog_from_schemas_response(monkeypatch):
+    requests = []
+
+    def fake_urlopen(request, timeout=30):
+        requests.append(request)
+        assert request.headers["Authorization"] == "Bearer token-for-" + ONELAKE_STORAGE_SCOPE
+        if "unity-catalog/schemas" in request.full_url:
+            return _FakeResponse({"schemas": [{"catalog_name": "lh.Lakehouse"}]})
+        return _FakeResponse(
+            {"columns": [{"name": "CustomerId"}, {"name": "Name"}]}
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    credential = _FakeCredential()
+    probe = FabricTableProbe(credential=credential)
+    lakehouse = LakehouseRef(name="lh", item_id="item-1", workspace_id="ws-1", default_schema="dbo")
+
+    assert probe.has_column(lakehouse, "dbo", "customer", "CustomerId") is True
+    assert probe.has_column(lakehouse, "dbo", "customer", "missing_column") is False
+    assert credential.requested_scopes == [ONELAKE_STORAGE_SCOPE]
+    assert requests[0].full_url == f"{ONELAKE_TABLE_API_BASE}/ws-1/item-1/api/2.1/unity-catalog/schemas?catalog_name=item-1"
+    assert requests[1].full_url == f"{ONELAKE_TABLE_API_BASE}/ws-1/item-1/api/2.1/unity-catalog/tables/lh.Lakehouse.dbo.customer"
+    assert probe.stats.columns_present == 1
+    assert probe.stats.columns_missing == 1
+
+
+def test_unresolved_lakehouse_columns_is_unverifiable_without_any_network_call(monkeypatch):
+    def fake_urlopen(*_args, **_kwargs):
+        raise AssertionError("must not probe an unresolved lakehouse")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    probe = FabricTableProbe(credential=_FakeCredential())
+    lakehouse = LakehouseRef(name="lh", item_id="00000000-0000-0000-0000-000000000000", workspace_id=None)
+
+    assert probe.has_column(lakehouse, "dbo", "customer", "CustomerId") is None
+    assert probe.stats.columns_unverified == 1
+
+
+def test_empty_columns_result_is_unverifiable_not_missing(monkeypatch):
+    def fake_urlopen(request, timeout=30):
+        if "unity-catalog/schemas" in request.full_url:
+            return _FakeResponse({"schemas": [{"catalog_name": "lh.Lakehouse"}]})
+        return _FakeResponse({"columns": []})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    probe = FabricTableProbe(credential=_FakeCredential())
+    lakehouse = LakehouseRef(name="lh", item_id="item-1", workspace_id="ws-1", default_schema="dbo")
+
+    assert probe.has_column(lakehouse, "dbo", "customer", "CustomerId") is None
+    assert probe.stats.columns_unverified == 1
+    assert probe.errors and "no column metadata" in probe.errors[0]

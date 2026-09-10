@@ -179,6 +179,25 @@ def _missing_table_reason(
     return f"{resolved_schema}.{table}"
 
 
+def _missing_column_reason(
+    config: Config,
+    table_index: Optional[TableIndex],
+    lakehouse: Optional[str],
+    schema: Optional[str],
+    table: Optional[str],
+    column: str,
+) -> Optional[str]:
+    """None when the column is fine to bind (including 'unverifiable'); else the column name to drop/report."""
+    if table_index is None or table is None:
+        return None
+    ref = config.lakehouse(lakehouse)
+    resolved_schema = schema or ref.default_schema
+    present = table_index.has_column(ref, resolved_schema, table, column)
+    if present is None or present:
+        return None
+    return column
+
+
 def _conflicting_derived_names(
     model: GraphModel, config: Config, unmapped_default: str, table_index: Optional[TableIndex] = None
 ) -> set[str]:
@@ -369,9 +388,39 @@ def build_ontology(
         entity.display_name_property = resolve_display_name(entity, config, raw_name)
 
     _apply_timeseries(ontology, config, diagnostics, table_index)
+    _verify_static_property_columns(ontology, config, diagnostics, table_index)
     _build_relationships(model, config, ontology, class_by_iri, diagnostics, table_index)
     _report_unbound(ontology, diagnostics)
     return ontology
+
+
+def _verify_static_property_columns(
+    ontology: OntologyIR, config: Config, diagnostics: DiagnosticBag, table_index: Optional[TableIndex] = None
+) -> None:
+    """A key column that's missing fails the build; any other missing column just leaves the property unbound."""
+    if table_index is None:
+        return
+    for entity in ontology.entities.values():
+        if not entity.bound:
+            continue
+        for prop in entity.static_properties:
+            column = prop.source_column or prop.name
+            missing = _missing_column_reason(config, table_index, entity.lakehouse, entity.schema, entity.table, column)
+            if missing is None:
+                continue
+            subject = f"{entity.name}.{prop.name}"
+            if prop.name in entity.key:
+                diagnostics.error(
+                    "E16", f"key column '{missing}' was not found in table '{entity.schema}.{entity.table}'", subject
+                )
+                continue
+            prop.unbound_reason = missing
+            ontology.unbound_properties[subject] = missing
+            diagnostics.warning(
+                "W13",
+                f"source column '{missing}' was not found in table '{entity.schema}.{entity.table}'; property left unbound",
+                subject,
+            )
 
 
 def _add_foreign_key_properties(
@@ -478,6 +527,18 @@ def _apply_timeseries(
                     "W3c", f"timeseries source table '{missing_table}' was not found; binding skipped", entity_name
                 )
                 continue
+            timestamp_column = block["timestampColumn"]
+            missing_timestamp = _missing_column_reason(
+                config, table_index, lakehouse, resolved_schema, table, timestamp_column
+            )
+            if missing_timestamp is not None:
+                diagnostics.warning(
+                    "W13",
+                    f"timeseries timestamp column '{missing_timestamp}' was not found in "
+                    f"'{resolved_schema}.{table}'; binding skipped",
+                    entity_name,
+                )
+                continue
             names: list[str] = []
             for prop_name in block.get("properties") or []:
                 prop = entity.properties.get(prop_name)
@@ -488,12 +549,32 @@ def _apply_timeseries(
                     diagnostics.error("E5", f"key property '{prop_name}' cannot be a timeseries property", entity_name)
                     continue
                 prop.timeseries = True
+                column = prop.source_column or prop.name
+                missing_column = _missing_column_reason(config, table_index, lakehouse, resolved_schema, table, column)
+                if missing_column is not None:
+                    subject = f"{entity_name}.{prop.name}"
+                    prop.unbound_reason = missing_column
+                    ontology.unbound_properties[subject] = missing_column
+                    diagnostics.warning(
+                        "W13",
+                        f"source column '{missing_column}' was not found in table "
+                        f"'{resolved_schema}.{table}'; property left unbound",
+                        subject,
+                    )
+                    continue
                 names.append(prop.name)
+            if not names:
+                diagnostics.warning(
+                    "W3c",
+                    f"timeseries binding on '{resolved_schema}.{table}' skipped: no bindable properties remained",
+                    entity_name,
+                )
+                continue
             entity.timeseries.append(
                 TimeSeriesBindingIR(
                     schema=resolved_schema,
                     table=table,
-                    timestamp_column=block["timestampColumn"],
+                    timestamp_column=timestamp_column,
                     property_names=names,
                     lakehouse=lakehouse,
                 )
@@ -624,6 +705,19 @@ def _build_contextualization(
         diagnostics.error(
             "E12",
             f"key column count mismatch (source {len(source_columns)}/{len(source.key)}, target {len(target_columns)}/{len(target.key)})",
+            relationship.name,
+        )
+        return None
+
+    missing_columns = [
+        column
+        for column in (*source_columns, *target_columns)
+        if _missing_column_reason(config, table_index, lakehouse, schema, table, column) is not None
+    ]
+    if missing_columns:
+        diagnostics.warning(
+            "W13",
+            f"no contextualization: link table '{schema}.{table}' is missing column(s) {', '.join(missing_columns)}",
             relationship.name,
         )
         return None

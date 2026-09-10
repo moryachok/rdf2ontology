@@ -14,14 +14,22 @@ class DeployError(Exception):
 
 
 def resolve_repository_directory(item_dir: Path) -> tuple[Path, list[str]]:
-    """Accept either the repository folder or a single '<Name>.Ontology' folder."""
+    """Accept either the repository folder or a single '<Name>.Ontology' folder.
+
+    Returns the repository root plus item paths relative to it; nested paths are kept so
+    fabric-cicd recreates the same folder hierarchy in the workspace.
+    """
     item_dir = Path(item_dir)
     if item_dir.name.endswith(".Ontology"):
         return item_dir.parent, [item_dir.name]
-    names = sorted(child.name for child in item_dir.iterdir() if child.is_dir() and child.name.endswith(".Ontology"))
-    if not names:
+    paths = sorted(
+        child.relative_to(item_dir).as_posix()
+        for child in item_dir.rglob("*.Ontology")
+        if child.is_dir()
+    )
+    if not paths:
         raise DeployError(f"no '*.Ontology' folder found under {item_dir}")
-    return item_dir, names
+    return item_dir, paths
 
 
 def render_plan(repository_directory: Path, item_names: list[str], workspace_id: str, environment: Optional[str]) -> str:
@@ -35,8 +43,10 @@ def render_plan(repository_directory: Path, item_names: list[str], workspace_id:
     for name in item_names:
         item = load_item(repository_directory / name, ignore_ids=True)
         bound = sum(1 for entity in item["entityTypes"].values() if entity["bindings"])
+        parent = Path(name).parent.as_posix()
+        folder = "/" if parent == "." else f"/{parent}"
         lines.append(
-            f"  item       : {name} "
+            f"  item       : {Path(name).name} -> workspace folder {folder} "
             f"({len(item['entityTypes'])} entity types, {bound} bound, "
             f"{len(item['relationshipTypes'])} relationship types)"
         )

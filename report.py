@@ -43,6 +43,11 @@ def render_summary(ontology: OntologyIR, result: Optional[EmitResult] = None, ta
             f"  physical tables   : {stats.verified_present} present, {stats.verified_missing} missing, "
             f"{stats.unverified} unverified"
         )
+        if stats.columns_total:
+            lines.append(
+                f"  physical columns  : {stats.columns_present} present, {stats.columns_missing} missing, "
+                f"{stats.columns_unverified} unverified"
+            )
     keyless = sorted(e.name for e in ontology.entities.values() if not e.key)
     if keyless:
         lines.append(f"  keyless           : {', '.join(keyless)}")
@@ -59,6 +64,10 @@ def render_summary(ontology: OntologyIR, result: Optional[EmitResult] = None, ta
         lines.append("  skipped (physical table not found):")
         for entity_name, reason in sorted(ontology.skipped_entities.items()):
             lines.append(f"    - {entity_name}: {reason}")
+    if ontology.unbound_properties:
+        lines.append("  unbound (physical column not found):")
+        for subject, reason in sorted(ontology.unbound_properties.items()):
+            lines.append(f"    - {subject}: {reason}")
     if result is not None:
         lines.append(f"  written           : {len(result.files)} file(s) -> {result.item_dir}")
         if result.parameter_file:
@@ -94,11 +103,21 @@ def json_report(
         "ontology": ontology.name,
         "renames": dict(ontology.renames),
         "skippedMissingTable": dict(ontology.skipped_entities),
+        "unboundMissingColumn": dict(ontology.unbound_properties),
         "physicalTables": (
             {
                 "verifiedPresent": table_index.stats.verified_present,
                 "verifiedMissing": table_index.stats.verified_missing,
                 "unverified": table_index.stats.unverified,
+            }
+            if table_index is not None
+            else None
+        ),
+        "physicalColumns": (
+            {
+                "verifiedPresent": table_index.stats.columns_present,
+                "verifiedMissing": table_index.stats.columns_missing,
+                "unverified": table_index.stats.columns_unverified,
             }
             if table_index is not None
             else None

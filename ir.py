@@ -20,6 +20,9 @@ class PropertyIR:
     alt_label: Optional[str] = None
     custom_attributes: dict[str, str] = field(default_factory=dict)
     timeseries: bool = False
+    # Set to the missing column name when --require-physical-tables can't find it in the
+    # lakehouse; the property still appears in definition.json but gets no propertyBindings row.
+    unbound_reason: Optional[str] = None
 
 
 @dataclass
@@ -95,6 +98,8 @@ class OntologyIR:
     renames: dict[str, str] = field(default_factory=dict)
     # raw RDF class name -> "schema.table" reason, for entities dropped by --require-physical-tables.
     skipped_entities: dict[str, str] = field(default_factory=dict)
+    # "Entity.Property" -> missing column name, for properties left unbound by --require-physical-tables.
+    unbound_properties: dict[str, str] = field(default_factory=dict)
 
     def bound_entities(self) -> list[EntityIR]:
         return [e for e in self.entities.values() if e.bound]

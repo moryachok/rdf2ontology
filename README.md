@@ -108,7 +108,7 @@ python3 -m rdf2ontology lint --input my.ttl --ignore L-ORPHAN --ignore L-NAME-LE
 | `--fail-on error\|warning` | Exit non-zero threshold (default `error`) |
 | `--ignore RULE` | Repeatable; also settable as `lint.ignore` in the config |
 | `--strict` | Promote every warning to an error |
-| `--require-physical-tables` | Probe Fabric and drop entity/relationship types whose declared source table does not exist yet (see [below](#tables-that-dont-exist-yet---require-physical-tables)) |
+| `--require-physical-tables` | Probe Fabric and drop entity/relationship types whose declared source table does not exist yet, and leave individual properties unbound if their declared column doesn't (see [below](#tables-that-dont-exist-yet---require-physical-tables)) |
 | `--skip-unbound-entities` | Drop entity types with no declared source table (overrides `defaults.emitUnboundEntities`) |
 | `--skip-unbound-relationships` | Drop relationship types with no contextualization (overrides `defaults.emitUnboundRelationships`) |
 
@@ -478,6 +478,13 @@ python3 -m rdf2ontology build --input ontology-items/rdf/customer_address.ttl \
 in the lakehouse a rebuild reuses the same id for the entity type — no `--allow-new-ids` needed.
 The skipped set is also written under `skippedMissingTable` in `--json-report`.
 
+`--require-physical-tables` also checks that every property's declared column actually exists in
+its (now-verified) table, using the same OneLake credentials — a table can exist while a column
+is still mid-migration. A missing **key** column fails the build (`E16`): the entity type can't be
+bound without it. Any other missing column just leaves that one property out of
+`propertyBindings` — it still appears in `definition.json`, ready to bind once the column lands —
+and is reported as `W13`, with the full list under `unboundMissingColumn` in `--json-report`.
+
 ---
 
 ## IDs
@@ -542,6 +549,7 @@ With an existing map, `build` reuses every known id and refuses to mint new ones
 | `L-INVERSE` | info | Inverse pair — one side will be dropped |
 | `L-ORPHAN` | info | Class with no properties and no relationships |
 | `L-SRC-TABLE-UNVERIFIED` | warning | (`--require-physical-tables` only) table existence could not be verified (unresolved lakehouse id) — entity type kept; `build`/`lint` error out if this happens for every declared table |
+| `L-SRC-COLUMN-MISSING` | warning | (`--require-physical-tables` only) declared source column does not exist in the (verified) lakehouse table — property will be left unbound |
 
 Only `L-PARSE`, `L-RANGE-CONFLICT` and (when a config names a lakehouse) `L-SRC-LAKEHOUSE` block
 `build`. Everything else is auto-resolved and reported, never silently dropped.
@@ -554,7 +562,8 @@ Only `L-PARSE`, `L-RANGE-CONFLICT` and (when a config names a lakehouse) `L-SRC-
 `E8` binding cardinality and TimeSeries prerequisites · `E9` timestamp column ·
 `E10` id uniqueness/format · `E11` dangling reference (e.g. `displayNameProperty`) ·
 `E12` contextualization keys · `E13` `KustoTable` with `NonTimeSeries` · `E14` punning (structural
-folders only — the RDF path already warns via `L-PUN`) · `E15` config references an unknown concept.
+folders only — the RDF path already warns via `L-PUN`) · `E15` config references an unknown concept ·
+`E16` (`--require-physical-tables` only) a **key** column does not exist in the lakehouse table.
 
 `W1` name length · `W2` unmapped range · `W3` unbound entity · `W4` dropped relationship ·
 `W5` missing contextualization · `W6` `Boolean` on a 0/1 column · `W7` placeholder GUID (workspace
@@ -564,7 +573,8 @@ annotation, RDF local name used instead · `W12` derived property name conflicts
 `valueType` on another entity type, RDF local name used instead · `W3c` (`--require-physical-tables`
 only) entity type, timeseries binding or contextualization dropped because its table does not exist
 · `W3d` the Fabric table probe itself failed (auth/network) — affected tables treated as
-unverifiable rather than missing.
+unverifiable rather than missing · `W13` (`--require-physical-tables` only) a non-key column does
+not exist in the lakehouse table — the property is left unbound instead of being dropped.
 
 ### Exit codes
 

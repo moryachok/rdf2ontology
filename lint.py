@@ -10,7 +10,7 @@ from rdflib.namespace import OWL, RDF, RDFS, XSD
 from .config import Config
 from .diagnostics import DiagnosticBag
 from .fabric_tables import TableIndex
-from .mapping import _entity_source, _missing_table_reason, resolve_key, sanitize_name, value_type_for_range
+from .mapping import _entity_source, _missing_column_reason, _missing_table_reason, resolve_key, sanitize_name, value_type_for_range
 from .rdf_model import GraphModel, local_name
 
 NAME_REGEX = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,127}$")
@@ -40,6 +40,7 @@ RULES: dict[str, str] = {
     "L-SRC-LAKEHOUSE": "sourceLakehouse has no matching config entry",
     "L-SRC-COLUMN": "Property on a bound class has no source-column annotation",
     "L-SRC-COLUMN-UNSAFE": "Source column name risks delta column mapping",
+    "L-SRC-COLUMN-MISSING": "Source column does not exist in the lakehouse table (--require-physical-tables)",
     "L-KEY": "No key candidate resolvable for a class",
     "L-FK-MISSING": "Object property has no source-column annotation",
     "L-ORPHAN": "Class with no properties and no relationships",
@@ -167,6 +168,8 @@ def _lint_classes(model: GraphModel, config: Config, bag: DiagnosticBag, table_i
                 record.name,
             )
 
+        source_lakehouse = source_schema = source_table = ref = None
+        table_verifiable = False
         if table_ref and table_index is not None:
             source_lakehouse, source_schema, source_table = _entity_source(model, config, class_iri)
             ref = config.lakehouse(source_lakehouse)
@@ -182,6 +185,8 @@ def _lint_classes(model: GraphModel, config: Config, bag: DiagnosticBag, table_i
                     f"source table '{source_schema}.{source_table}' does not exist in the lakehouse; will be dropped",
                     record.name,
                 )
+            else:
+                table_verifiable = True
 
         data_properties = model.properties_of(class_iri, "data")
         for prop in sorted(data_properties, key=lambda p: p.name):
@@ -194,6 +199,17 @@ def _lint_classes(model: GraphModel, config: Config, bag: DiagnosticBag, table_i
                     f"column '{column or prop.name}' contains a character that enables delta column mapping",
                     f"{record.name}.{prop.name}",
                 )
+            if table_verifiable:
+                missing_column = _missing_column_reason(
+                    config, table_index, source_lakehouse, source_schema, source_table, column or prop.name
+                )
+                if missing_column:
+                    bag.warning(
+                        "L-SRC-COLUMN-MISSING",
+                        f"column '{missing_column}' does not exist in table '{source_schema}.{source_table}'; "
+                        "property will be left unbound",
+                        f"{record.name}.{prop.name}",
+                    )
 
         key, _rule, candidates = resolve_key(model, config, class_iri)
         if not key:

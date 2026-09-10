@@ -1,4 +1,4 @@
-"""Live Fabric/OneLake probing for physical table existence (`--require-physical-tables`).
+"""Live Fabric/OneLake probing for physical table and column existence (`--require-physical-tables`).
 
 No new dependency: auth reuses `azure-identity` (already required by `deploy.py`) and the
 HTTP calls use the stdlib `urllib`. Per-lookup failures are fail-open — an unresolved
@@ -6,6 +6,10 @@ lakehouse id or a single network/auth error is reported as "unverifiable" rather
 treated as "missing", so a placeholder GUID or a transient blip never empties the ontology.
 Callers should still treat a *total* probe failure (every lookup unverifiable) as a hard
 error rather than silent success — see `TableIndex.stats`.
+
+Column existence is answered via the OneLake Table API for Delta (Unity Catalog-compatible,
+learn.microsoft.com/fabric/onelake/table-apis/delta-table-apis-get-started), which accepts
+the same storage-audience token as the DFS filesystem endpoint above.
 """
 
 from __future__ import annotations
@@ -22,10 +26,11 @@ from .config import PLACEHOLDER_GUID, LakehouseRef
 
 FABRIC_API_BASE = "https://api.fabric.microsoft.com/v1"
 ONELAKE_DFS_BASE = "https://onelake.dfs.fabric.microsoft.com"
+ONELAKE_TABLE_API_BASE = "https://onelake.table.fabric.microsoft.com/delta"
 FABRIC_RESOURCE_SCOPE = "https://api.fabric.microsoft.com/.default"
 # OneLake is addressed as ADLS Gen2 storage and only accepts Storage-audience tokens
 # (learn.microsoft.com/fabric/onelake/onelake-access-api#authorization) - NOT the Fabric
-# REST API audience above.
+# REST API audience above. The Delta table API documents the same audience.
 ONELAKE_STORAGE_SCOPE = "https://storage.azure.com/.default"
 
 
@@ -41,10 +46,17 @@ class TableIndexStats:
     verified_present: int = 0
     verified_missing: int = 0
     unverified: int = 0
+    columns_present: int = 0
+    columns_missing: int = 0
+    columns_unverified: int = 0
 
     @property
     def total(self) -> int:
         return self.verified_present + self.verified_missing + self.unverified
+
+    @property
+    def columns_total(self) -> int:
+        return self.columns_present + self.columns_missing + self.columns_unverified
 
 
 class TableIndex:
@@ -57,9 +69,20 @@ class TableIndex:
     def __init__(self) -> None:
         self.stats = TableIndexStats()
         self._counted: set[tuple[str, str, str]] = set()
+        self._counted_columns: set[tuple[str, str, str, str]] = set()
 
     def has(self, lakehouse: LakehouseRef, schema: str, table: str) -> Optional[bool]:
         raise NotImplementedError
+
+    def columns(self, lakehouse: LakehouseRef, schema: str, table: str) -> Optional[set[str]]:
+        """Lowercased column names for `schema.table`, or `None` if unverifiable (fail open)."""
+        raise NotImplementedError
+
+    def has_column(self, lakehouse: LakehouseRef, schema: str, table: str, column: str) -> Optional[bool]:
+        cols = self.columns(lakehouse, schema, table)
+        if cols is None:
+            return self._record_column(lakehouse, schema, table, column, None)
+        return self._record_column(lakehouse, schema, table, column, column.lower() in cols)
 
     def is_unverifiable(self, lakehouse: LakehouseRef) -> bool:
         raise NotImplementedError
@@ -83,19 +106,47 @@ class TableIndex:
             self.stats.verified_missing += 1
         return result
 
+    def _record_column(
+        self, lakehouse: LakehouseRef, schema: str, table: str, column: str, present: Optional[bool]
+    ) -> Optional[bool]:
+        key = (lakehouse.name or "", schema.lower(), table.lower(), column.lower())
+        if key in self._counted_columns:
+            return present
+        self._counted_columns.add(key)
+        if present is None:
+            self.stats.columns_unverified += 1
+        elif present:
+            self.stats.columns_present += 1
+        else:
+            self.stats.columns_missing += 1
+        return present
+
 
 class StaticTableIndex(TableIndex):
     """Offline index for tests: an explicit set of known '<lakehouse>|<schema>.<table>' keys."""
 
-    def __init__(self, known: Optional[set[str]] = None, unverifiable_lakehouses: Optional[set[str]] = None) -> None:
+    def __init__(
+        self,
+        known: Optional[set[str]] = None,
+        unverifiable_lakehouses: Optional[set[str]] = None,
+        columns: Optional[dict[str, set[str]]] = None,
+    ) -> None:
         super().__init__()
         self.known = {key.lower() for key in (known or set())}
         self.unverifiable_lakehouses = set(unverifiable_lakehouses or set())
+        # "<lakehouse>|<schema>.<table>" -> column names; a table absent from this dict is
+        # treated as unverifiable (fail open), never as "no columns".
+        self.column_index = {key.lower(): {col.lower() for col in cols} for key, cols in (columns or {}).items()}
 
     def has(self, lakehouse: LakehouseRef, schema: str, table: str) -> Optional[bool]:
         if lakehouse.name in self.unverifiable_lakehouses:
             return self._record(lakehouse, schema, table, None)
         return self._record(lakehouse, schema, table, f"{lakehouse.name}|{schema}.{table}".lower() in self.known)
+
+    def columns(self, lakehouse: LakehouseRef, schema: str, table: str) -> Optional[set[str]]:
+        if lakehouse.name in self.unverifiable_lakehouses:
+            return None
+        return self.column_index.get(f"{lakehouse.name}|{schema}.{table}".lower())
 
     def is_unverifiable(self, lakehouse: LakehouseRef) -> bool:
         return lakehouse.name in self.unverifiable_lakehouses
@@ -114,6 +165,8 @@ class FabricTableProbe(TableIndex):
         self._credential = credential
         self._tokens: dict[str, str] = {}
         self._cache: dict[tuple[str, str], set[str]] = {}
+        self._catalog_cache: dict[tuple[str, str], str] = {}
+        self._column_cache: dict[tuple[str, str, str, str], set[str]] = {}
         # Populated by has() on a probe failure; callers fail open and surface these once.
         self.errors: list[str] = []
 
@@ -243,6 +296,42 @@ class FabricTableProbe(TableIndex):
         if tables is None:
             return self._record(lakehouse, schema, table, None)
         return self._record(lakehouse, schema, table, f"{schema}.{table}".lower() in tables)
+
+    def _catalog_for(self, workspace_id: str, item_id: str) -> str:
+        # The Unity Catalog "catalog" name is the lakehouse item, addressed as "<name>.Lakehouse";
+        # read it back from the API rather than guessing, since GUID-addressed items may differ.
+        key = (workspace_id, item_id)
+        if key not in self._catalog_cache:
+            url = f"{ONELAKE_TABLE_API_BASE}/{workspace_id}/{item_id}/api/2.1/unity-catalog/schemas?catalog_name={item_id}"
+            payload, _ = self._get_json(url, ONELAKE_STORAGE_SCOPE)
+            schemas = payload.get("schemas") or []
+            self._catalog_cache[key] = schemas[0]["catalog_name"] if schemas else item_id
+        return self._catalog_cache[key]
+
+    def _columns_for(self, lakehouse: LakehouseRef, schema: str, table: str) -> set[str]:
+        key = (lakehouse.workspace_id, lakehouse.item_id, schema.lower(), table.lower())
+        if key not in self._column_cache:
+            catalog = self._catalog_for(lakehouse.workspace_id, lakehouse.item_id)
+            url = (
+                f"{ONELAKE_TABLE_API_BASE}/{lakehouse.workspace_id}/{lakehouse.item_id}/api/2.1/unity-catalog/tables/"
+                f"{catalog}.{schema}.{table}"
+            )
+            payload, _ = self._get_json(url, ONELAKE_STORAGE_SCOPE)
+            columns = payload.get("columns") or []
+            if not columns:
+                raise TableProbeError(f"table '{schema}.{table}' returned no column metadata from {url}")
+            self._column_cache[key] = {col["name"].lower() for col in columns if col.get("name")}
+        return self._column_cache[key]
+
+    def columns(self, lakehouse: LakehouseRef, schema: str, table: str) -> Optional[set[str]]:
+        if self.is_unverifiable(lakehouse):
+            return None
+        try:
+            return self._columns_for(lakehouse, schema, table)
+        except TableProbeError as exc:
+            # Fail open: a preview-API/network error must never be mistaken for "column missing".
+            self.errors.append(str(exc))
+            return None
 
     def is_unverifiable(self, lakehouse: LakehouseRef) -> bool:
         return not lakehouse.workspace_id or lakehouse.item_id == PLACEHOLDER_GUID

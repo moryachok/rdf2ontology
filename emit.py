@@ -127,7 +127,7 @@ def _binding_json(entity: EntityIR, id_map: IdMap, config: Config) -> dict:
     bindings = [
         {"sourceColumnName": p.source_column or p.name, "targetPropertyId": id_map.property_id(entity.name, p.name)}
         for p in entity.properties.values()
-        if not p.timeseries
+        if not p.timeseries and not p.unbound_reason
     ]
     bindings.sort(key=lambda item: item["sourceColumnName"])
     return {
